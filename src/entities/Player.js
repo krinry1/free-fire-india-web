@@ -223,14 +223,14 @@ export class Player {
 
         const loader = new GLTFLoader();
 
-        const loadClip = (url) => {
+        const loadClip = (url, clipName) => {
             return new Promise((resolve) => {
                 loader.load(
                     url,
                     (gltf) => {
                         if (gltf.animations && gltf.animations.length > 0) {
                             const clip = gltf.animations[0];
-                            this._retargetClip(clip);
+                            this._retargetClip(clip, clipName);
                             console.log(`  ✓ "${clip.name}" from ${url} (${clip.tracks.length} tracks)`);
                             resolve(clip);
                         } else {
@@ -247,9 +247,9 @@ export class Player {
         console.log('=== LOADING EXTRA ANIMATIONS ===');
 
         const [runClip, jumpClip, sitClip] = await Promise.all([
-            loadClip('/models/run.glb'),
-            loadClip('/models/jump.glb'),
-            loadClip('/models/sit.glb'),
+            loadClip('/models/run.glb', 'Run'),
+            loadClip('/models/jump.glb', 'Jump'),
+            loadClip('/models/sit.glb', 'Sit'),
         ]);
 
         if (runClip) {
@@ -294,8 +294,9 @@ export class Player {
     /**
      * Retarget a clip's track names to match our main model's bone paths.
      */
-    _retargetClip(clip) {
+    _retargetClip(clip, clipName) {
         let remapped = 0;
+        const newTracks = [];
 
         clip.tracks.forEach((track) => {
             const lastDot = track.name.lastIndexOf('.');
@@ -305,17 +306,34 @@ export class Player {
             const parts = nodePath.split('/');
             const boneName = parts[parts.length - 1];
 
+            // Ignore top-level Node rotations/positions to fix 90-degree tilts from Mixamo exports
+            if (boneName.toLowerCase() === 'armature' || boneName.toLowerCase() === 'scene') {
+                return;
+            }
+
+            // For the Jump animation, remove hip position/rotation to fix "flying forward in sleep position"
+            if (clipName === 'Jump') {
+                if (boneName.toLowerCase().includes('hips')) {
+                    if (property === '.position' || property === '.quaternion') {
+                        return; // strip root motion and rotation from jump
+                    }
+                }
+            }
+
             if (this._bonePathMap[boneName]) {
                 const newName = this._bonePathMap[boneName] + property;
                 if (track.name !== newName) {
                     track.name = newName;
                     remapped++;
                 }
+                newTracks.push(track);
             }
         });
 
+        clip.tracks = newTracks;
+
         if (remapped > 0) {
-            console.log(`    ↳ Retargeted ${remapped}/${clip.tracks.length} tracks`);
+            console.log(`    ↳ Retargeted ${remapped}/${clip.tracks.length} tracks for ${clipName}`);
         }
     }
 
@@ -331,12 +349,16 @@ export class Player {
     fadeToAction(name, duration) {
         const newAction = this.actions[name];
         if (!newAction) return;
-        if (newAction === this.currentAction) return;
+        if (newAction === this.currentAction) {
+            newAction.timeScale = 1; // Ensure it runs in case it was paused
+            return;
+        }
 
         const fadeDur = duration !== undefined ? duration : this.fadeTime;
         const oldAction = this.currentAction;
 
         newAction.reset();
+        newAction.timeScale = 1;
         newAction.play();
 
         if (oldAction) {
@@ -412,9 +434,19 @@ export class Player {
      */
     updateAnimationState() {
         if (this.isJumping) return;   // Don't interrupt jump
-        if (this.isSitting) return;   // Don't interrupt sit (user must toggle off)
 
-        if (this._isMoving()) {
+        const moving = this._isMoving();
+
+        if (this.isSitting) {
+            this.fadeToAction('Sit');
+            // Pause the 'Sit' animation if the player stops moving
+            if (this.actions['Sit']) {
+                this.actions['Sit'].timeScale = moving ? 1 : 0;
+            }
+            return;   // Don't interrupt sit (user must toggle off)
+        }
+
+        if (moving) {
             this.fadeToAction('Run');
         } else {
             this.fadeToAction('Idle');
@@ -490,7 +522,7 @@ export class Player {
 
         // Rotate character to face movement direction
         if (this.moveDirection.lengthSq() > 0.001) {
-            const angle = Math.atan2(-this.moveDirection.x, -this.moveDirection.z);
+            const angle = Math.atan2(this.moveDirection.x, this.moveDirection.z);
             this.model.rotation.y = angle;
         }
     }
