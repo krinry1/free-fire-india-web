@@ -37,12 +37,20 @@ export class Player {
 
         // =====================================================
         // MOVEMENT SPEED — Tweak this to change how fast the player moves
-        // Units per second.  Previous value was 8, now faster.
+        // Units per second.
         // =====================================================
         this.moveSpeed = 15.0;
 
         // Reusable vectors (avoid allocations per frame)
         this.moveDirection = new THREE.Vector3();
+
+        // =====================================================
+        // JUMP / GRAVITY  — Simple manual simulation
+        // =====================================================
+        this.velocityY = 0;       // Current vertical velocity
+        this.gravity = 30.0;    // Gravity acceleration (units/s²) — pulls down
+        this.jumpForce = 12.0;    // Upward impulse when space is pressed
+        this.isGrounded = false;   // Set to true by Game.js ground clamping
 
         // =====================================================
         // PLAYER SCALE — Tweak this value to resize the character!
@@ -152,25 +160,40 @@ export class Player {
      */
     update(delta, cameraYaw) {
         if (!this.model) return;
+
+        // 1. Horizontal WASD movement
         this.handleMovement(delta, cameraYaw);
+
+        // 2. Jump & Gravity (vertical axis)
+        this.handleJump(delta);
+    }
+
+    /**
+     * Spacebar jump + gravity simulation.
+     * Game.js ground-clamping sets this.isGrounded = true and floors the Y.
+     */
+    handleJump(delta) {
+        const input = this.inputManager;
+
+        // Trigger jump only when grounded and Space is pressed
+        if (input.isKeyDown(' ') && this.isGrounded) {
+            this.velocityY = this.jumpForce;   // Apply upward impulse
+            this.isGrounded = false;             // We are now airborne
+        }
+
+        // Apply gravity every frame (even when grounded, clampPlayerToGround fixes it)
+        this.velocityY -= this.gravity * delta;
+
+        // Move the player vertically
+        this.model.position.y += this.velocityY * delta;
     }
 
     /**
      * Directional WASD movement relative to the camera's yaw.
      *
-     * Math overview:
-     *   The camera's yaw tells us which direction is "forward" on the horizontal plane.
-     *   Forward vector = ( -sin(yaw),  0,  -cos(yaw) )
-     *   Right   vector = (  cos(yaw),  0,  -sin(yaw) )
-     *
-     *   W adds +forward, S adds -forward
-     *   D adds +right,   A adds -right
-     *
-     * The player model's Y-rotation is then set to match the camera yaw,
-     * so the character always faces the direction you're looking.
-     *
-     * @param {number} delta - seconds since last frame
-     * @param {number} cameraYaw - the camera's horizontal rotation in radians
+     * Math:
+     *   Forward = ( -sin(yaw),  0,  -cos(yaw) )
+     *   Right   = (  cos(yaw),  0,  -sin(yaw) )
      */
     handleMovement(delta, cameraYaw) {
         const input = this.inputManager;
@@ -206,10 +229,10 @@ export class Player {
         this.model.position.addScaledVector(this.moveDirection, this.moveSpeed * delta);
 
         // Rotate the character model to face the movement direction
-        // so the character visually faces where they're going
         if (this.moveDirection.lengthSq() > 0.001) {
             const targetAngle = Math.atan2(-this.moveDirection.x, -this.moveDirection.z);
             this.model.rotation.y = targetAngle;
         }
     }
 }
+

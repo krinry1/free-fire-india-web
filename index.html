@@ -1,34 +1,76 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
+
+<head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Multiplayer Shooter Game</title>
     <style>
-      body {
-        margin: 0;
-        overflow: hidden;
-        background-color: #000;
-      }
-      #game-container {
-        width: 100vw;
-        height: 100vh;
-      }
-      #loading {
-        position: absolute;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        color: white;
-        font-family: Arial, sans-serif;
-        font-size: 24px;
-        pointer-events: none;
-      }
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+        }
+
+        #game-container {
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 24px;
+            pointer-events: none;
+            z-index: 20;
+        }
+
+        /* ── CROSSHAIR ── */
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        /* Outer ring */
+        #crosshair::before {
+            content: '';
+            display: block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(255, 255, 255, 0.85);
+            border-radius: 50%;
+            box-shadow: 0 0 4px rgba(0, 0, 0, 0.6);
+        }
+
+        /* Center dot */
+        #crosshair::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 4px;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            box-shadow: 0 0 3px rgba(0, 0, 0, 0.7);
+        }
     </style>
-  </head>
-  <body>
+</head>
+
+<body>
     <div id="loading">Loading Map...</div>
+    <div id="crosshair"></div>
     <div id="game-container"></div>
     <script type="module" src="/src/main.js"></script>
-  </body>
+</body>
+
 </html>

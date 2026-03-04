@@ -120,21 +120,32 @@ export class Game {
 
     /**
      * Downward Raycaster — snaps the player's Y to the terrain surface.
+     * Works with the jump system: only clamps when falling and at/below ground level.
      */
     clampPlayerToGround() {
-        const playerModel = this.player.model;
+        const player = this.player;
+        const playerModel = player.model;
         if (!playerModel) return;
 
         const mapMeshes = this.world.mapMeshes;
         if (!mapMeshes || mapMeshes.length === 0) return;
 
+        // Cast ray from high above the player's XZ position straight down
         this.rayOrigin.set(playerModel.position.x, 500, playerModel.position.z);
         this.groundRaycaster.set(this.rayOrigin, this.rayDirection);
 
         const intersects = this.groundRaycaster.intersectObjects(mapMeshes, false);
 
         if (intersects.length > 0) {
-            playerModel.position.y = intersects[0].point.y;
+            const groundY = intersects[0].point.y;
+
+            // Only clamp if the player is at or below the ground surface
+            // (i.e., they are falling or standing — not mid-jump going upward)
+            if (playerModel.position.y <= groundY) {
+                playerModel.position.y = groundY;
+                player.velocityY = 0;
+                player.isGrounded = true;
+            }
         }
     }
 

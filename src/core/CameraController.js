@@ -1,19 +1,20 @@
 import * as THREE from 'three';
 
 /**
- * CameraController Class  — Third-Person Shooter style
+ * CameraController Class — Third-Person Shooter style (Free Fire / PUBG)
  *
  * Architecture:
- *   - A THREE.Object3D "anchor" sits at the player's chest height.
- *   - The PerspectiveCamera is a child of the anchor, offset to the RIGHT
- *     and BEHIND the player (over-the-shoulder, like Free Fire / PUBG).
- *   - YAW (horizontal) is applied to the anchor AND synced to the player
- *     model by Game.js, so the character always faces where the camera looks.
- *   - PITCH (vertical) is applied ONLY to the anchor (camera tilts, character stays upright).
+ *   - An invisible "anchor" Object3D sits at the player's chest.
+ *   - YAW rotates the anchor around Y (horizontal look).
+ *   - PITCH rotates the anchor around X (vertical look), clamped.
+ *   - The camera is NOT a child of the anchor.  Instead, we compute the
+ *     camera's ideal world position each frame by transforming a local offset
+ *     through the anchor's world matrix.  This avoids the broken lookAt()
+ *     issue that occurs when the camera is a child of a rotating parent.
  *
- * Input modes:
- *   PC   → Middle-mouse click activates Pointer Lock for FPS-style mouse look.
- *   Mobile → Touch drag on the right side of the screen (handled by pointer events).
+ * Input:
+ *   PC     → Click canvas to activate Pointer Lock. Mouse drives yaw/pitch.
+ *   Mobile → Touch-drag drives yaw/pitch (pointer events fallback).
  */
 export class CameraController {
     /**
@@ -24,92 +25,92 @@ export class CameraController {
     constructor(camera, domElement, scene) {
         this.camera = camera;
         this.domElement = domElement;
+        this.scene = scene;
 
         // -------------------------------------------------------
-        // CAMERA BOOM / OFFSET SETUP (Over-the-Shoulder)
+        // CAMERA BOOM / OFFSET  (Over-the-Shoulder)
         // -------------------------------------------------------
 
+        // Invisible pivot placed at the player's chest each frame
         this.anchor = new THREE.Object3D();
         this.anchor.name = 'CameraAnchor';
         scene.add(this.anchor);
 
-        // Camera local offset from the anchor:
-        //   x > 0 → shifted to the RIGHT  (over-the-shoulder)
-        //   y > 0 → above the pivot
-        //   z > 0 → behind the character
+        // The camera's position relative to the anchor, in the anchor's LOCAL space.
+        //   x > 0  → shifted RIGHT  (over-the-shoulder)
+        //   y > 0  → above the pivot
+        //   z > 0  → behind the character
         // ── TWEAK THESE for the perfect TPS feel ──
-        this.cameraLocalOffset = new THREE.Vector3(0.8, 1.5, 3.5);
+        this.localOffset = new THREE.Vector3(1, 2, 4);
 
-        // Place the camera as a child of the anchor
-        this.anchor.add(this.camera);
-        this.camera.position.copy(this.cameraLocalOffset);
+        // How high above the player's feet we place the anchor pivot
+        // (roughly chest / shoulder height of the scaled character)
+        this.pivotHeight = 1.5;
 
         // -------------------------------------------------------
         // ROTATION STATE
         // -------------------------------------------------------
 
-        this.yaw = 0;     // Horizontal (around Y)
-        this.pitch = 0;     // Vertical   (around X)
+        this.yaw = 0;
+        this.pitch = 0;
 
         // Pitch clamp (radians)
-        this.pitchMin = -0.6;   // Can look slightly below horizon
-        this.pitchMax = 1.0;   // Can look up but not flip
+        this.pitchMin = -0.4;   // slightly below horizon
+        this.pitchMax = 0.8;   // looking up, but not flipping
 
-        // Sensitivity for Pointer Lock (raw movementX / movementY pixels)
+        // Sensitivity (radians per pixel of mouse / touch movement)
         this.sensitivity = 0.002;
 
         // -------------------------------------------------------
-        // POINTER LOCK STATE (PC)
+        // Reusable math objects (avoid allocation per frame)
+        // -------------------------------------------------------
+        this._idealPos = new THREE.Vector3();
+        this._lookTarget = new THREE.Vector3();
+
+        // -------------------------------------------------------
+        // POINTER LOCK (PC)
         // -------------------------------------------------------
 
         this.isPointerLocked = false;
 
-        // Listen for middle-mouse click to request Pointer Lock
-        this.domElement.addEventListener('mousedown', (e) => {
-            if (e.button === 1) {
-                // Middle-mouse button → request Pointer Lock
-                e.preventDefault();
-                this.domElement.requestPointerLock();
-            }
-        });
-
-        // Also allow left-click to request Pointer Lock for convenience
+        // Click canvas → request Pointer Lock
         this.domElement.addEventListener('click', () => {
             if (!this.isPointerLocked) {
                 this.domElement.requestPointerLock();
             }
         });
 
-        // Listen for pointer lock changes
-        document.addEventListener('pointerlockchange', () => {
-            this.isPointerLocked = (document.pointerLockElement === this.domElement);
-            console.log('Pointer Lock:', this.isPointerLocked ? 'ACTIVE' : 'RELEASED');
+        // Middle-mouse also requests lock
+        this.domElement.addEventListener('mousedown', (e) => {
+            if (e.button === 1) {
+                e.preventDefault();
+                this.domElement.requestPointerLock();
+            }
         });
 
-        // Mouse movement (only effective when pointer is locked)
+        // Track lock state
+        document.addEventListener('pointerlockchange', () => {
+            this.isPointerLocked = (document.pointerLockElement === this.domElement);
+        });
+
+        // Raw mouse movement while locked
         document.addEventListener('mousemove', (e) => {
             if (!this.isPointerLocked) return;
-
-            // movementX / movementY give raw pixel deltas (no need to track prev position)
             this.yaw -= e.movementX * this.sensitivity;
             this.pitch -= e.movementY * this.sensitivity;
             this.pitch = Math.max(this.pitchMin, Math.min(this.pitchMax, this.pitch));
         });
 
         // -------------------------------------------------------
-        // TOUCH DRAG STATE (Mobile fallback)
+        // TOUCH DRAG (Mobile fallback)
         // -------------------------------------------------------
-
         this.isTouchDragging = false;
         this.prevTouchX = 0;
         this.prevTouchY = 0;
 
-        // Use pointer events for touch (they unify mouse + touch)
         this.domElement.addEventListener('pointerdown', (e) => {
-            // Only start touch-drag if pointer lock is NOT active (mobile)
             if (this.isPointerLocked) return;
             if (e.pointerType !== 'touch') return;
-
             this.isTouchDragging = true;
             this.prevTouchX = e.clientX;
             this.prevTouchY = e.clientY;
@@ -118,32 +119,22 @@ export class CameraController {
 
         this.domElement.addEventListener('pointermove', (e) => {
             if (!this.isTouchDragging) return;
-
             const dx = e.clientX - this.prevTouchX;
             const dy = e.clientY - this.prevTouchY;
             this.prevTouchX = e.clientX;
             this.prevTouchY = e.clientY;
-
             this.yaw -= dx * this.sensitivity;
             this.pitch -= dy * this.sensitivity;
             this.pitch = Math.max(this.pitchMin, Math.min(this.pitchMax, this.pitch));
         });
 
-        this.domElement.addEventListener('pointerup', () => {
-            this.isTouchDragging = false;
-        });
-        this.domElement.addEventListener('pointerleave', () => {
-            this.isTouchDragging = false;
-        });
+        this.domElement.addEventListener('pointerup', () => { this.isTouchDragging = false; });
+        this.domElement.addEventListener('pointerleave', () => { this.isTouchDragging = false; });
 
-        // Prevent context menu and touch browser gestures
+        // Misc browser niceties
         this.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
+        this.domElement.addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
         this.domElement.style.touchAction = 'none';
-
-        // Prevent middle-mouse scroll-wheel click from opening auto-scroll
-        this.domElement.addEventListener('auxclick', (e) => {
-            if (e.button === 1) e.preventDefault();
-        });
     }
 
     // ----------------------------------------------------------------
@@ -152,32 +143,42 @@ export class CameraController {
 
     /**
      * Call every frame AFTER the player has moved and been ground-clamped.
-     * @param {THREE.Vector3} targetPosition - The player model's world position
+     * @param {THREE.Vector3} targetPosition - The player model's world position (feet)
      */
     update(targetPosition) {
-        // 1. Position the anchor at the player, raised to chest height
-        this.anchor.position.copy(targetPosition);
-        this.anchor.position.y += 1.2;
+        // 1. Place the anchor at the player's chest height
+        this.anchor.position.set(
+            targetPosition.x,
+            targetPosition.y + this.pivotHeight,
+            targetPosition.z
+        );
 
-        // 2. Apply yaw (Y) and pitch (X) to the anchor
-        //    Euler order 'YXZ' ensures yaw is applied first
+        // 2. Apply yaw + pitch to the anchor (Euler order 'YXZ')
         this.anchor.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
 
-        // 3. Camera looks at the anchor (the player's chest)
-        this.camera.lookAt(this.anchor.getWorldPosition(new THREE.Vector3()));
+        // 3. Force the anchor's world matrix to update immediately
+        this.anchor.updateMatrixWorld(true);
+
+        // 4. Compute the camera's ideal WORLD position by transforming
+        //    localOffset through the anchor's world matrix.
+        this._idealPos.copy(this.localOffset);
+        this.anchor.localToWorld(this._idealPos);
+
+        // 5. Smoothly interpolate the camera toward the ideal position
+        this.camera.position.lerp(this._idealPos, 0.25);
+
+        // 6. The camera must look at the anchor's world position (the player's chest)
+        this.anchor.getWorldPosition(this._lookTarget);
+        this.camera.lookAt(this._lookTarget);
     }
 
     /**
-     * Returns the current yaw (horizontal rotation) in radians.
-     * Game.js uses this to rotate the player model to face where the camera looks.
+     * Returns the current yaw (horizontal) in radians.
      */
     getYaw() {
         return this.yaw;
     }
 
-    /**
-     * Cleanup
-     */
     dispose() {
         document.exitPointerLock();
     }
