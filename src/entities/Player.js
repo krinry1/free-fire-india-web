@@ -49,7 +49,7 @@ export class Player {
         // =====================================================
         this.velocityY = 0;       // Current vertical velocity
         this.gravity = 30.0;    // Gravity acceleration (units/s²) — pulls down
-        this.jumpForce = 12.0;    // Upward impulse when space is pressed
+        this.jumpForce = 15.0;    // Upward impulse when space is pressed (increased for stairs/obstacles)
         this.isGrounded = false;   // Set to true by Game.js ground clamping
 
         // =====================================================
@@ -86,7 +86,7 @@ export class Player {
             mass: 75,
             shape: playerShape,
             fixedRotation: true,
-            position: new CANNON.Vec3(0, 5, 0)
+            position: new CANNON.Vec3(0, 100, 0)
         });
 
         this.body.linearDamping = 0.9;
@@ -126,7 +126,8 @@ export class Player {
                     });
 
                     // Place the character at world origin
-                    this.model.position.set(0, 0, 0);
+                    // Spawn high up — gravity + ground clamping will drop them onto terrain
+                    this.model.position.set(0, 100, 0);
 
                     // --- Attach a small AxesHelper so we can see facing direction ---
                     this.axesHelper = new THREE.AxesHelper(2);

@@ -1,20 +1,24 @@
 import * as THREE from 'three';
 
 /**
- * CameraController Class — Third-Person Shooter style (Free Fire / PUBG)
+ * CameraController — Free Fire / PUBG style Third-Person Shooter Camera
  *
- * Architecture:
- *   - An invisible "anchor" Object3D sits at the player's chest.
- *   - YAW rotates the anchor around Y (horizontal look).
- *   - PITCH rotates the anchor around X (vertical look), clamped.
- *   - The camera is NOT a child of the anchor.  Instead, we compute the
- *     camera's ideal world position each frame by transforming a local offset
- *     through the anchor's world matrix.  This avoids the broken lookAt()
- *     issue that occurs when the camera is a child of a rotating parent.
+ * Architecture (NO lookAt — avoids child-of-rotating-parent bugs):
+ *
+ *   cameraGroup  (positioned at player neck each frame)
+ *     └─ rotation.y = yaw   (horizontal mouse)
+ *     └─ rotation.x = pitch (vertical mouse, clamped)
+ *          └─ camera (child, local position = shoulder offset)
+ *
+ *   Because the camera is a child of the group, rotating the group
+ *   naturally orbits the camera around the player. The camera's default
+ *   -Z look direction points FROM behind the player INTO the distance,
+ *   giving a correct over-the-shoulder third-person view.
  *
  * Input:
- *   PC     → Click canvas to activate Pointer Lock. Mouse drives yaw/pitch.
- *   Mobile → Touch-drag drives yaw/pitch (pointer events fallback).
+ *   PC     → Click to activate Pointer Lock. Mouse drives yaw/pitch.
+ *   Mobile → Touch drag (pointer events fallback).
+ *   Right-click → Aim (zoom FOV + tighter offset).
  */
 export class CameraController {
     /**
@@ -25,67 +29,65 @@ export class CameraController {
     constructor(camera, domElement, scene) {
         this.camera = camera;
         this.domElement = domElement;
-        this.scene = scene;
 
         // -------------------------------------------------------
-        // CAMERA BOOM / OFFSET  (Over-the-Shoulder)
+        // CAMERA GROUP (the invisible pivot at the player's neck)
         // -------------------------------------------------------
+        this.cameraGroup = new THREE.Object3D();
+        this.cameraGroup.name = 'CameraGroup';
+        scene.add(this.cameraGroup);
 
-        // Invisible pivot placed at the player's chest each frame
-        this.anchor = new THREE.Object3D();
-        this.anchor.name = 'CameraAnchor';
-        scene.add(this.anchor);
+        // Parent the camera to the group
+        this.cameraGroup.add(this.camera);
 
-        // The camera's position relative to the anchor, in the anchor's LOCAL space.
-        //   x > 0  → shifted RIGHT  (over-the-shoulder)
-        //   y > 0  → above the pivot
-        //   z > 0  → behind the character
-        // ── TWEAK THESE for the perfect TPS feel ──
-        this.localOffset = new THREE.Vector3(1, 2, 4);
+        // ── CAMERA OFFSETS ──
+        // Normal (hip-fire): right shoulder, above neck, behind player
+        //   x > 0 = right,  y > 0 = above pivot,  z > 0 = behind player
+        this.normalOffset = new THREE.Vector3(1.0, 0.5, 4.0);
+        // Aiming (right-click): tighter, closer
+        this.aimOffset = new THREE.Vector3(0.6, 0.3, 2.0);
 
-        // How high above the player's feet we place the anchor pivot
-        // (roughly chest / shoulder height of the scaled character)
+        // Set camera to the normal offset initially
+        this.camera.position.copy(this.normalOffset);
+
+        // Height above the player's FEET where we place the pivot (neck/shoulder)
         this.pivotHeight = 1.5;
 
         // -------------------------------------------------------
         // ROTATION STATE
         // -------------------------------------------------------
-
-        this.yaw = 0;
-        this.pitch = 0;
+        this.yaw = 0;    // Horizontal (mouse X)
+        this.pitch = 0;    // Vertical   (mouse Y)
 
         // Pitch clamp (radians)
-        this.pitchMin = -0.4;   // slightly below horizon
-        this.pitchMax = 0.8;   // looking up, but not flipping
+        //   positive = looking up,  negative = looking down
+        this.pitchMin = -0.4;
+        this.pitchMax = 0.8;
 
-        // Sensitivity (radians per pixel of mouse / touch movement)
         this.sensitivity = 0.002;
 
         // -------------------------------------------------------
-        // Reusable math objects (avoid allocation per frame)
+        // AIMING STATE (Right-click zoom)
         // -------------------------------------------------------
-        this._idealPos = new THREE.Vector3();
-        this._lookTarget = new THREE.Vector3();
+        this.isAiming = false;
+        this.normalFOV = 75;
+        this.aimFOV = 45;
 
         // -------------------------------------------------------
         // POINTER LOCK (PC)
         // -------------------------------------------------------
-
         this.isPointerLocked = false;
 
-        // Click canvas → request Pointer Lock
+        // Click to lock
         this.domElement.addEventListener('click', () => {
             if (!this.isPointerLocked) {
                 this.domElement.requestPointerLock();
             }
         });
 
-        // Middle-mouse also requests lock
+        // Middle-mouse also locks
         this.domElement.addEventListener('mousedown', (e) => {
-            if (e.button === 1) {
-                e.preventDefault();
-                this.domElement.requestPointerLock();
-            }
+            if (e.button === 1) { e.preventDefault(); this.domElement.requestPointerLock(); }
         });
 
         // Track lock state
@@ -99,6 +101,16 @@ export class CameraController {
             this.yaw -= e.movementX * this.sensitivity;
             this.pitch -= e.movementY * this.sensitivity;
             this.pitch = Math.max(this.pitchMin, Math.min(this.pitchMax, this.pitch));
+        });
+
+        // -------------------------------------------------------
+        // RIGHT-CLICK AIM
+        // -------------------------------------------------------
+        this.domElement.addEventListener('mousedown', (e) => {
+            if (e.button === 2) this.isAiming = true;    // Right-click down → aim
+        });
+        this.domElement.addEventListener('mouseup', (e) => {
+            if (e.button === 2) this.isAiming = false;   // Right-click up   → stop aiming
         });
 
         // -------------------------------------------------------
@@ -116,7 +128,6 @@ export class CameraController {
             this.prevTouchY = e.clientY;
             this.domElement.setPointerCapture(e.pointerId);
         });
-
         this.domElement.addEventListener('pointermove', (e) => {
             if (!this.isTouchDragging) return;
             const dx = e.clientX - this.prevTouchX;
@@ -127,11 +138,10 @@ export class CameraController {
             this.pitch -= dy * this.sensitivity;
             this.pitch = Math.max(this.pitchMin, Math.min(this.pitchMax, this.pitch));
         });
-
         this.domElement.addEventListener('pointerup', () => { this.isTouchDragging = false; });
         this.domElement.addEventListener('pointerleave', () => { this.isTouchDragging = false; });
 
-        // Misc browser niceties
+        // Browser niceties
         this.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
         this.domElement.addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
         this.domElement.style.touchAction = 'none';
@@ -143,37 +153,32 @@ export class CameraController {
 
     /**
      * Call every frame AFTER the player has moved and been ground-clamped.
-     * @param {THREE.Vector3} targetPosition - The player model's world position (feet)
+     * @param {THREE.Vector3} playerFeetPos - The player model's world position (feet)
      */
-    update(targetPosition) {
-        // 1. Place the anchor at the player's chest height
-        this.anchor.position.set(
-            targetPosition.x,
-            targetPosition.y + this.pivotHeight,
-            targetPosition.z
+    update(playerFeetPos) {
+        // 1. Position the group at the player's neck/shoulder height
+        this.cameraGroup.position.set(
+            playerFeetPos.x,
+            playerFeetPos.y + this.pivotHeight,
+            playerFeetPos.z
         );
 
-        // 2. Apply yaw + pitch to the anchor (Euler order 'YXZ')
-        this.anchor.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
+        // 2. Apply yaw + pitch to the group.
+        //    Euler order YXZ: yaw (Y) applied first in world, then pitch (X) in local.
+        this.cameraGroup.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
 
-        // 3. Force the anchor's world matrix to update immediately
-        this.anchor.updateMatrixWorld(true);
+        // 3. Smoothly interpolate the camera's local offset for aiming
+        const targetOffset = this.isAiming ? this.aimOffset : this.normalOffset;
+        this.camera.position.lerp(targetOffset, 0.15);
 
-        // 4. Compute the camera's ideal WORLD position by transforming
-        //    localOffset through the anchor's world matrix.
-        this._idealPos.copy(this.localOffset);
-        this.anchor.localToWorld(this._idealPos);
-
-        // 5. Smoothly interpolate the camera toward the ideal position
-        this.camera.position.lerp(this._idealPos, 0.25);
-
-        // 6. The camera must look at the anchor's world position (the player's chest)
-        this.anchor.getWorldPosition(this._lookTarget);
-        this.camera.lookAt(this._lookTarget);
+        // 4. Smoothly interpolate FOV for aiming zoom
+        const targetFOV = this.isAiming ? this.aimFOV : this.normalFOV;
+        this.camera.fov += (targetFOV - this.camera.fov) * 0.15;
+        this.camera.updateProjectionMatrix();
     }
 
     /**
-     * Returns the current yaw (horizontal) in radians.
+     * Returns the current yaw (horizontal rotation) in radians.
      */
     getYaw() {
         return this.yaw;
