@@ -41,17 +41,21 @@ export class CameraController {
         this.cameraGroup.add(this.camera);
 
         // ── CAMERA OFFSETS ──
-        // Normal (hip-fire): right shoulder, above neck, behind player
+        // Normal (hip-fire): right shoulder, above head, behind player
         //   x > 0 = right,  y > 0 = above pivot,  z > 0 = behind player
-        this.normalOffset = new THREE.Vector3(1.0, 0.5, 4.0);
+        // Character is ~11.5 units tall (scale 2.5 × 4.6 raw height)
+        this.normalOffset = new THREE.Vector3(1.5, 2.0, 10.0);
         // Aiming (right-click): tighter, closer
-        this.aimOffset = new THREE.Vector3(0.6, 0.3, 2.0);
+        this.aimOffset = new THREE.Vector3(2.0, 1.0, 6.0);
 
         // Set camera to the normal offset initially
         this.camera.position.copy(this.normalOffset);
 
-        // Height above the player's FEET where we place the pivot (neck/shoulder)
-        this.pivotHeight = 1.5;
+        // Height above the player's FEET where we place the pivot.
+        // Set ABOVE the player's head so the crosshair (screen center)
+        // is above the character — exactly like Free Fire.
+        // Character height ≈ 11.5 → pivot at 13.0 = above head
+        this.pivotHeight = 7.0;
 
         // -------------------------------------------------------
         // ROTATION STATE

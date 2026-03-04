@@ -39,7 +39,7 @@ export class Player {
         // MOVEMENT SPEED — Tweak this to change how fast the player moves
         // Units per second.
         // =====================================================
-        this.moveSpeed = 15.0;
+        this.moveSpeed = 30.0;
 
         // Reusable vectors (avoid allocations per frame)
         this.moveDirection = new THREE.Vector3();
@@ -48,16 +48,16 @@ export class Player {
         // JUMP / GRAVITY  — Simple manual simulation
         // =====================================================
         this.velocityY = 0;       // Current vertical velocity
-        this.gravity = 30.0;    // Gravity acceleration (units/s²) — pulls down
-        this.jumpForce = 15.0;    // Upward impulse when space is pressed (increased for stairs/obstacles)
+        this.gravity = 40.0;    // Gravity acceleration (units/s²) — pulls down
+        this.jumpForce = 25.0;    // Upward impulse when space is pressed (increased for stairs/obstacles)
         this.isGrounded = false;   // Set to true by Game.js ground clamping
 
         // =====================================================
         // PLAYER SCALE — Tweak this value to resize the character!
         // The raw character.glb is ~4.6 units tall.
-        // scale 0.4 → ~1.84m  |  scale 1.0 → 4.6m  |  scale 1.5 → ~6.9m
+        // scale 1.5 → ~6.9m  |  scale 2.0 → ~9.2m  |  scale 2.5 → ~11.5m
         // =====================================================
-        this.playerScale = 1.5;
+        this.playerScale = 2.5;
 
         // Small AxesHelper attached to the player so you can see facing direction
         this.axesHelper = null;
