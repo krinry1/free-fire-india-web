@@ -1,127 +1,149 @@
 import * as THREE from 'three';
 
 /**
- * CameraController Class
- * Implements a third-person "camera boom" that orbits around a target (the player).
+ * CameraController Class  — Third-Person Shooter style
  *
  * Architecture:
- *   - A THREE.Object3D called `anchor` is placed at the player's position every frame.
- *   - The anchor's Y-rotation controls YAW  (horizontal look — left/right).
- *   - The anchor's X-rotation controls PITCH (vertical look — up/down), clamped.
- *   - The actual THREE.PerspectiveCamera is a child of the anchor, offset along
- *     the local Z axis (behind) and Y axis (above).
+ *   - A THREE.Object3D "anchor" sits at the player's chest height.
+ *   - The PerspectiveCamera is a child of the anchor, offset to the RIGHT
+ *     and BEHIND the player (over-the-shoulder, like Free Fire / PUBG).
+ *   - YAW (horizontal) is applied to the anchor AND synced to the player
+ *     model by Game.js, so the character always faces where the camera looks.
+ *   - PITCH (vertical) is applied ONLY to the anchor (camera tilts, character stays upright).
  *
- * Input:
- *   Uses the Pointer Events API (pointerdown / pointermove / pointerup) which
- *   automatically unifies Mouse + Touch on both Desktop and Mobile.
+ * Input modes:
+ *   PC   → Middle-mouse click activates Pointer Lock for FPS-style mouse look.
+ *   Mobile → Touch drag on the right side of the screen (handled by pointer events).
  */
 export class CameraController {
     /**
-     * @param {THREE.PerspectiveCamera} camera - The main rendering camera
-     * @param {HTMLElement} domElement - The renderer's canvas (used for pointer events)
-     * @param {THREE.Scene} scene - The main scene (we add the anchor to it)
+     * @param {THREE.PerspectiveCamera} camera
+     * @param {HTMLElement} domElement - The renderer's canvas
+     * @param {THREE.Scene} scene
      */
     constructor(camera, domElement, scene) {
         this.camera = camera;
         this.domElement = domElement;
 
         // -------------------------------------------------------
-        // CAMERA BOOM SETUP
+        // CAMERA BOOM / OFFSET SETUP (Over-the-Shoulder)
         // -------------------------------------------------------
 
-        // The anchor is an invisible pivot that sits at the player's position.
-        // Rotating this pivot rotates the camera around the player.
         this.anchor = new THREE.Object3D();
         this.anchor.name = 'CameraAnchor';
         scene.add(this.anchor);
 
-        // Offset from anchor → where the camera actually sits.
-        // Local space: x=0 (centered), y=2.5 (above), z=6 (behind)
-        // ── TWEAK THESE to change how far / close the camera feels ──
-        this.boomLength = 6;      // Distance behind the player
-        this.boomHeight = 2.5;    // Height above the player pivot
+        // Camera local offset from the anchor:
+        //   x > 0 → shifted to the RIGHT  (over-the-shoulder)
+        //   y > 0 → above the pivot
+        //   z > 0 → behind the character
+        // ── TWEAK THESE for the perfect TPS feel ──
+        this.cameraLocalOffset = new THREE.Vector3(0.8, 1.5, 3.5);
 
-        // Place the camera as a child of the anchor at the boom offset
+        // Place the camera as a child of the anchor
         this.anchor.add(this.camera);
-        this.camera.position.set(0, this.boomHeight, this.boomLength);
+        this.camera.position.copy(this.cameraLocalOffset);
 
         // -------------------------------------------------------
         // ROTATION STATE
         // -------------------------------------------------------
 
-        // Current yaw/pitch in radians
-        this.yaw = 0;              // Horizontal rotation (around Y axis)
-        this.pitch = 0;            // Vertical rotation (around X axis)
+        this.yaw = 0;     // Horizontal (around Y)
+        this.pitch = 0;     // Vertical   (around X)
 
-        // Pitch clamp limits (in radians)
-        // -0.5 ≈ looking slightly down,  1.2 ≈ looking steeply up
-        this.pitchMin = -0.5;      // Cannot look below the ground
-        this.pitchMax = 1.2;       // Cannot flip over the character's head
+        // Pitch clamp (radians)
+        this.pitchMin = -0.6;   // Can look slightly below horizon
+        this.pitchMax = 1.0;   // Can look up but not flip
 
-        // Sensitivity — how many radians per pixel of pointer drag
-        this.sensitivity = 0.003;
+        // Sensitivity for Pointer Lock (raw movementX / movementY pixels)
+        this.sensitivity = 0.002;
 
         // -------------------------------------------------------
-        // POINTER TRACKING STATE
+        // POINTER LOCK STATE (PC)
         // -------------------------------------------------------
 
-        this.isPointerDown = false;
-        this.prevPointerX = 0;
-        this.prevPointerY = 0;
+        this.isPointerLocked = false;
 
-        // Bind event handlers
-        this.onPointerDown = this.onPointerDown.bind(this);
-        this.onPointerMove = this.onPointerMove.bind(this);
-        this.onPointerUp = this.onPointerUp.bind(this);
+        // Listen for middle-mouse click to request Pointer Lock
+        this.domElement.addEventListener('mousedown', (e) => {
+            if (e.button === 1) {
+                // Middle-mouse button → request Pointer Lock
+                e.preventDefault();
+                this.domElement.requestPointerLock();
+            }
+        });
 
-        // Attach unified pointer events on the canvas
-        this.domElement.addEventListener('pointerdown', this.onPointerDown);
-        this.domElement.addEventListener('pointermove', this.onPointerMove);
-        this.domElement.addEventListener('pointerup', this.onPointerUp);
-        this.domElement.addEventListener('pointerleave', this.onPointerUp);
+        // Also allow left-click to request Pointer Lock for convenience
+        this.domElement.addEventListener('click', () => {
+            if (!this.isPointerLocked) {
+                this.domElement.requestPointerLock();
+            }
+        });
 
-        // Prevent the context menu on right-click drag
+        // Listen for pointer lock changes
+        document.addEventListener('pointerlockchange', () => {
+            this.isPointerLocked = (document.pointerLockElement === this.domElement);
+            console.log('Pointer Lock:', this.isPointerLocked ? 'ACTIVE' : 'RELEASED');
+        });
+
+        // Mouse movement (only effective when pointer is locked)
+        document.addEventListener('mousemove', (e) => {
+            if (!this.isPointerLocked) return;
+
+            // movementX / movementY give raw pixel deltas (no need to track prev position)
+            this.yaw -= e.movementX * this.sensitivity;
+            this.pitch -= e.movementY * this.sensitivity;
+            this.pitch = Math.max(this.pitchMin, Math.min(this.pitchMax, this.pitch));
+        });
+
+        // -------------------------------------------------------
+        // TOUCH DRAG STATE (Mobile fallback)
+        // -------------------------------------------------------
+
+        this.isTouchDragging = false;
+        this.prevTouchX = 0;
+        this.prevTouchY = 0;
+
+        // Use pointer events for touch (they unify mouse + touch)
+        this.domElement.addEventListener('pointerdown', (e) => {
+            // Only start touch-drag if pointer lock is NOT active (mobile)
+            if (this.isPointerLocked) return;
+            if (e.pointerType !== 'touch') return;
+
+            this.isTouchDragging = true;
+            this.prevTouchX = e.clientX;
+            this.prevTouchY = e.clientY;
+            this.domElement.setPointerCapture(e.pointerId);
+        });
+
+        this.domElement.addEventListener('pointermove', (e) => {
+            if (!this.isTouchDragging) return;
+
+            const dx = e.clientX - this.prevTouchX;
+            const dy = e.clientY - this.prevTouchY;
+            this.prevTouchX = e.clientX;
+            this.prevTouchY = e.clientY;
+
+            this.yaw -= dx * this.sensitivity;
+            this.pitch -= dy * this.sensitivity;
+            this.pitch = Math.max(this.pitchMin, Math.min(this.pitchMax, this.pitch));
+        });
+
+        this.domElement.addEventListener('pointerup', () => {
+            this.isTouchDragging = false;
+        });
+        this.domElement.addEventListener('pointerleave', () => {
+            this.isTouchDragging = false;
+        });
+
+        // Prevent context menu and touch browser gestures
         this.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
-
-        // Make sure touch-action is set so mobile browsers don't hijack gestures
         this.domElement.style.touchAction = 'none';
-    }
 
-    // ----------------------------------------------------------------
-    // Pointer Event Handlers (unified Mouse + Touch)
-    // ----------------------------------------------------------------
-
-    onPointerDown(event) {
-        this.isPointerDown = true;
-        this.prevPointerX = event.clientX;
-        this.prevPointerY = event.clientY;
-
-        // Capture the pointer so we get events even outside the canvas
-        this.domElement.setPointerCapture(event.pointerId);
-    }
-
-    onPointerMove(event) {
-        if (!this.isPointerDown) return;
-
-        // Compute how far the pointer moved since last frame
-        const deltaX = event.clientX - this.prevPointerX;
-        const deltaY = event.clientY - this.prevPointerY;
-
-        // Update stored position
-        this.prevPointerX = event.clientX;
-        this.prevPointerY = event.clientY;
-
-        // Apply rotation deltas
-        // Horizontal drag → yaw (rotate around world Y axis)
-        this.yaw -= deltaX * this.sensitivity;
-
-        // Vertical drag → pitch (rotate around local X axis), clamped
-        this.pitch -= deltaY * this.sensitivity;
-        this.pitch = Math.max(this.pitchMin, Math.min(this.pitchMax, this.pitch));
-    }
-
-    onPointerUp(event) {
-        this.isPointerDown = false;
+        // Prevent middle-mouse scroll-wheel click from opening auto-scroll
+        this.domElement.addEventListener('auxclick', (e) => {
+            if (e.button === 1) e.preventDefault();
+        });
     }
 
     // ----------------------------------------------------------------
@@ -129,43 +151,34 @@ export class CameraController {
     // ----------------------------------------------------------------
 
     /**
-     * Call this every frame AFTER the player has moved.
-     * @param {THREE.Vector3} targetPosition - The player model's current world position
+     * Call every frame AFTER the player has moved and been ground-clamped.
+     * @param {THREE.Vector3} targetPosition - The player model's world position
      */
     update(targetPosition) {
-        // 1. Move the anchor to the player's position
+        // 1. Position the anchor at the player, raised to chest height
         this.anchor.position.copy(targetPosition);
-        // Slightly raise the pivot so the camera orbits around the character's chest,
-        // not their feet
-        this.anchor.position.y += 1.0;
+        this.anchor.position.y += 1.2;
 
-        // 2. Apply yaw + pitch rotations to the anchor
-        // We use Euler order 'YXZ' so yaw (Y) is applied first, then pitch (X)
+        // 2. Apply yaw (Y) and pitch (X) to the anchor
+        //    Euler order 'YXZ' ensures yaw is applied first
         this.anchor.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
 
-        // 3. Tell the camera to look at the anchor's world position (the player)
-        // Because the camera is a child of the anchor, its local position
-        // (0, boomHeight, boomLength) is automatically transformed.
-        // We just need it to face the anchor.
+        // 3. Camera looks at the anchor (the player's chest)
         this.camera.lookAt(this.anchor.getWorldPosition(new THREE.Vector3()));
     }
 
     /**
-     * Returns the current yaw angle in radians.
-     * Player.js can use this to rotate the character to face the camera direction
-     * when moving forward.
+     * Returns the current yaw (horizontal rotation) in radians.
+     * Game.js uses this to rotate the player model to face where the camera looks.
      */
     getYaw() {
         return this.yaw;
     }
 
     /**
-     * Clean up all event listeners (call if you ever dispose of this controller).
+     * Cleanup
      */
     dispose() {
-        this.domElement.removeEventListener('pointerdown', this.onPointerDown);
-        this.domElement.removeEventListener('pointermove', this.onPointerMove);
-        this.domElement.removeEventListener('pointerup', this.onPointerUp);
-        this.domElement.removeEventListener('pointerleave', this.onPointerUp);
+        document.exitPointerLock();
     }
 }

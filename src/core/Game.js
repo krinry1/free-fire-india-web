@@ -97,21 +97,24 @@ export class Game {
         // 1. Physics tick (unused visually for now)
         this.physics.update(delta);
 
-        // 2. Player movement (WASD)
-        this.player.update(delta);
+        // 2. Get the camera's current yaw (horizontal look direction)
+        const cameraYaw = this.cameraController.getYaw();
 
-        // 3. Ground-clamp the player onto the map terrain
+        // 3. Player movement (WASD, relative to camera yaw)
+        this.player.update(delta, cameraYaw);
+
+        // 4. Ground-clamp the player onto the map terrain
         this.clampPlayerToGround();
 
-        // 4. Update the camera boom to follow the player's new position
+        // 5. Update the camera boom to follow the player's new position
         if (this.player.model) {
             this.cameraController.update(this.player.model.position);
         }
 
-        // 5. World tick
+        // 6. World tick
         this.world.update(delta);
 
-        // 6. Render
+        // 7. Render
         this.renderer.render(this.scene, this.camera);
     }
 

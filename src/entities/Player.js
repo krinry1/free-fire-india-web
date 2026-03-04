@@ -5,20 +5,25 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 /**
  * Player Class
  * Handles the 3D character model (static mesh, NO animations),
- * and basic WASD "tank-style" movement.
+ * and directional WASD movement relative to the camera's yaw.
  *
- * Movement scheme:
- *   W / S  → Move forward / backward along the character's facing direction
- *   A / D  → Rotate the character left / right
+ * Movement scheme (TPS — move where you look):
+ *   W → Move forward   (the direction the camera faces horizontally)
+ *   S → Move backward
+ *   A → Strafe left
+ *   D → Strafe right
  *
- * Camera is now handled entirely by CameraController — Player no longer touches it.
+ * The player's Y-rotation is synced to the camera yaw externally by Game.js,
+ * so the character always faces where the camera is looking.
+ *
+ * Camera is handled entirely by CameraController.
  * Ground clamping is handled externally by Game.js via Raycaster.
  */
 export class Player {
     /**
-     * @param {THREE.Scene} scene - The main Three.js scene
-     * @param {CANNON.World} physicsWorld - The Cannon-es physics world (kept for later phases)
-     * @param {InputManager} inputManager - Handles keyboard states
+     * @param {THREE.Scene} scene
+     * @param {CANNON.World} physicsWorld
+     * @param {InputManager} inputManager
      */
     constructor(scene, physicsWorld, inputManager) {
         this.scene = scene;
@@ -30,18 +35,19 @@ export class Player {
         // Cannon-es body (created but NOT driving movement yet)
         this.body = null;
 
-        // --- Movement tuning ---
-        this.moveSpeed = 8.0;      // Units per second (forward / backward)
-        this.turnSpeed = 2.5;      // Radians per second (left / right rotation)
+        // =====================================================
+        // MOVEMENT SPEED — Tweak this to change how fast the player moves
+        // Units per second.  Previous value was 8, now faster.
+        // =====================================================
+        this.moveSpeed = 15.0;
 
-        // Reusable vectors so we don't allocate every frame
-        this.forwardDir = new THREE.Vector3();
+        // Reusable vectors (avoid allocations per frame)
+        this.moveDirection = new THREE.Vector3();
 
         // =====================================================
         // PLAYER SCALE — Tweak this value to resize the character!
         // The raw character.glb is ~4.6 units tall.
         // scale 0.4 → ~1.84m  |  scale 1.0 → 4.6m  |  scale 1.5 → ~6.9m
-        // Increase until the character looks right next to the map buildings.
         // =====================================================
         this.playerScale = 1.5;
 
@@ -59,11 +65,9 @@ export class Player {
     }
 
     /**
-     * Create the Cannon-es body.
-     * NOTE: Physics body exists but does NOT drive movement yet.
+     * Create the Cannon-es body (not driving movement yet).
      */
     setupPhysics() {
-        // Scale physics half-extents to roughly match the visual scale
         const hw = 0.3 * this.playerScale;
         const hh = 0.9 * this.playerScale;
         const hd = 0.3 * this.playerScale;
@@ -143,40 +147,69 @@ export class Player {
 
     /**
      * Called every frame from Game.animate().
-     * Camera is no longer managed here — see CameraController.
      * @param {number} delta - seconds since last frame
+     * @param {number} cameraYaw - the current horizontal rotation of the camera (radians)
      */
-    update(delta) {
+    update(delta, cameraYaw) {
         if (!this.model) return;
-        this.handleMovement(delta);
+        this.handleMovement(delta, cameraYaw);
     }
 
     /**
-     * Tank-style WASD movement:
-     *   W → move forward (the direction the character faces)
-     *   S → move backward
-     *   A → rotate left
-     *   D → rotate right
+     * Directional WASD movement relative to the camera's yaw.
+     *
+     * Math overview:
+     *   The camera's yaw tells us which direction is "forward" on the horizontal plane.
+     *   Forward vector = ( -sin(yaw),  0,  -cos(yaw) )
+     *   Right   vector = (  cos(yaw),  0,  -sin(yaw) )
+     *
+     *   W adds +forward, S adds -forward
+     *   D adds +right,   A adds -right
+     *
+     * The player model's Y-rotation is then set to match the camera yaw,
+     * so the character always faces the direction you're looking.
+     *
+     * @param {number} delta - seconds since last frame
+     * @param {number} cameraYaw - the camera's horizontal rotation in radians
      */
-    handleMovement(delta) {
+    handleMovement(delta, cameraYaw) {
         const input = this.inputManager;
 
-        // --- Rotation (A / D) ---
-        if (input.isKeyDown('a')) {
-            this.model.rotation.y += this.turnSpeed * delta;
-        }
-        if (input.isKeyDown('d')) {
-            this.model.rotation.y -= this.turnSpeed * delta;
-        }
+        const w = input.isKeyDown('w');
+        const s = input.isKeyDown('s');
+        const a = input.isKeyDown('a');
+        const d = input.isKeyDown('d');
 
-        // --- Translation (W / S) ---
-        this.model.getWorldDirection(this.forwardDir);
+        const isMoving = w || s || a || d;
+        if (!isMoving) return;
 
-        if (input.isKeyDown('w')) {
-            this.model.position.addScaledVector(this.forwardDir, this.moveSpeed * delta);
-        }
-        if (input.isKeyDown('s')) {
-            this.model.position.addScaledVector(this.forwardDir, -this.moveSpeed * delta);
+        // Build the forward and right unit vectors from the camera yaw
+        const forwardX = -Math.sin(cameraYaw);
+        const forwardZ = -Math.cos(cameraYaw);
+
+        const rightX = Math.cos(cameraYaw);
+        const rightZ = -Math.sin(cameraYaw);
+
+        // Accumulate direction
+        let dx = 0;
+        let dz = 0;
+
+        if (w) { dx += forwardX; dz += forwardZ; }  // Forward
+        if (s) { dx -= forwardX; dz -= forwardZ; }  // Backward
+        if (d) { dx += rightX; dz += rightZ; }  // Strafe right
+        if (a) { dx -= rightX; dz -= rightZ; }  // Strafe left
+
+        // Normalize so diagonal movement isn't faster
+        this.moveDirection.set(dx, 0, dz).normalize();
+
+        // Apply speed * delta
+        this.model.position.addScaledVector(this.moveDirection, this.moveSpeed * delta);
+
+        // Rotate the character model to face the movement direction
+        // so the character visually faces where they're going
+        if (this.moveDirection.lengthSq() > 0.001) {
+            const targetAngle = Math.atan2(-this.moveDirection.x, -this.moveDirection.z);
+            this.model.rotation.y = targetAngle;
         }
     }
 }
