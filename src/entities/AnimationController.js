@@ -91,7 +91,8 @@ export class AnimationController {
                     //
                     // ★ If the character appears UPSIDE-DOWN, flip the sign:
                     //   try  Math.PI / 2  instead of  -Math.PI / 2
-                    this.rotationOffsetGroup.rotation.x = -Math.PI / 2;
+                   // Isko +Math.PI / 2 karke dekho, ye character ko khada kar dega
+this.rotationOffsetGroup.rotation.x = Math.PI / 2;
 
                     // ═══ 3. model — the visual mesh ═══
                     this.model = gltf.scene;
