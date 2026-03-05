@@ -1,10 +1,12 @@
 /**
  * InputManager Class
  * Listens for keyboard input and keeps track of which keys are currently held down.
+ * Also supports virtual input from touch joystick & buttons.
  */
 export class InputManager {
     constructor() {
         this.keys = {};
+        this.isSprinting = false; // toggled by Run button
 
         // Attach event listeners to the window
         window.addEventListener('keydown', this.onKeyDown.bind(this), false);
@@ -17,6 +19,15 @@ export class InputManager {
 
     onKeyUp(event) {
         this.keys[event.key.toLowerCase()] = false;
+    }
+
+    /**
+     * Programmatically set a key state (used by virtual joystick).
+     * @param {string} key
+     * @param {boolean} down
+     */
+    setKey(key, down) {
+        this.keys[key.toLowerCase()] = down;
     }
 
     /**

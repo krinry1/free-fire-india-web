@@ -5,7 +5,8 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 /**
  * Player Class
  * Handles the 3D character model with SEPARATE animation files,
- * directional WASD movement, jump, sit/crouch, and smooth crossfading.
+ * camera-relative movement (both WASD & analog joystick),
+ * jump, sit/crouch, and smooth crossfading.
  *
  * Animation files (loaded separately, NOT embedded in character.glb):
  *   /models/idle.glb   → default standing pose
@@ -15,8 +16,15 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
  *
  * Movement:
  *   W/A/S/D → directional movement relative to camera yaw
+ *   Joystick → analog 360° camera-relative movement
  *   Space   → jump
  *   C       → toggle sit/crouch
+ *
+ * Phase 11 Fixes:
+ *   1. FBX Animation Rotation Fix — strips root bone rotation offsets
+ *      from Mixamo exports and locks model X/Z rotation in the update loop.
+ *   2. Camera-Relative Joystick — uses analog joystick vector + camera yaw
+ *      to compute a true 360° movement direction & smooth model facing.
  */
 export class Player {
     constructor(scene, physicsWorld, inputManager) {
@@ -31,8 +39,15 @@ export class Player {
         // MOVEMENT
         // =====================================================
         this.moveSpeed = 30.0;   // Normal speed (units/sec)
+        this.sprintSpeed = 50.0; // Sprint speed when Run button held
         this.crouchSpeed = 10.0;   // Speed while sitting/crouching
         this.moveDirection = new THREE.Vector3();
+
+        // =====================================================
+        // SMOOTH ROTATION
+        // =====================================================
+        this.targetYaw = 0;       // The desired facing angle (radians)
+        this.rotationSmoothing = 10.0; // Higher = snappier turning (lerp speed)
 
         // =====================================================
         // JUMP / GRAVITY
@@ -102,8 +117,6 @@ export class Player {
         this.setupPhysics();
         // Load idle.glb as the PRIMARY model — it has both the Mixamo
         // rigged mesh (skeleton + skin) AND the idle animation clip.
-        // character.glb is a static mesh with NO skeleton, so animations
-        // can never work on it.
         await this.loadPrimaryModel('/models/idle.glb');
         // Then load the remaining animation clips from separate files
         await this.loadExtraAnimations();
@@ -190,6 +203,8 @@ export class Player {
                     // ★ Extract the IDLE animation clip from this same file ★
                     if (gltf.animations && gltf.animations.length > 0) {
                         const idleClip = gltf.animations[0];
+                        // Strip root rotation from idle too, just in case
+                        this._stripRootRotationFromClip(idleClip, 'Idle');
                         this.actions['Idle'] = this.mixer.clipAction(idleClip);
                         this.actions['Idle'].loop = THREE.LoopRepeat;
                         this.actions['Idle'].play();
@@ -291,10 +306,82 @@ export class Player {
         console.log(`  Bone path map: ${Object.keys(this._bonePathMap).length} nodes`);
     }
 
+    // ----------------------------------------------------------------
+    // FBX Animation Rotation Fix (Phase 11)
+    // ----------------------------------------------------------------
+
+    /**
+     * Strips or neutralises root-bone rotation offsets from Mixamo FBX→GLTF clips.
+     *
+     * The problem: Mixamo FBX exports bake a -90° X-axis rotation into root
+     * nodes (Armature, Scene, or the Hips bone) because FBX uses Y-up while
+     * the original rig was Z-up. When those clips play on our GLTF model
+     * (which is already Y-up), the character lies flat on the ground.
+     *
+     * Fix: For every quaternion track whose target node is a root-level node
+     * (Armature, Scene, or empty-named), we replace ALL keyframe values with
+     * the identity quaternion (0,0,0,1). For the Hips bone, we neutralise
+     * only the X and Z components of the quaternion to strip tilt while
+     * preserving the Y-axis turn the animation may contain.
+     */
+    _stripRootRotationFromClip(clip, clipName) {
+        const rootNames = ['armature', 'scene', ''];
+        let stripped = 0;
+
+        clip.tracks.forEach((track) => {
+            const lastDot = track.name.lastIndexOf('.');
+            const nodePath = track.name.substring(0, lastDot);
+            const property = track.name.substring(lastDot); // e.g. '.quaternion'
+
+            // Only act on quaternion (rotation) tracks
+            if (property !== '.quaternion') return;
+
+            const parts = nodePath.split('/');
+            const boneName = parts[parts.length - 1];
+            const bNameL = boneName.toLowerCase();
+
+            // Root-level containers (Armature, Scene, empty) → force identity
+            if (rootNames.includes(bNameL)) {
+                for (let i = 0; i < track.values.length; i += 4) {
+                    track.values[i] = 0; // x
+                    track.values[i + 1] = 0; // y
+                    track.values[i + 2] = 0; // z
+                    track.values[i + 3] = 1; // w
+                }
+                stripped++;
+                console.log(`    ↳ [${clipName}] Zeroed root quaternion for "${boneName}"`);
+            }
+
+            // Hips bone — neutralise tilt (X,Z) but keep Y rotation
+            if (bNameL.includes('hips')) {
+                for (let i = 0; i < track.values.length; i += 4) {
+                    // Keep only the Y-axis component of the quaternion
+                    // A pure Y rotation quaternion has x=0, z=0
+                    track.values[i] = 0; // x → no tilt
+                    track.values[i + 2] = 0; // z → no roll
+                    // Re-normalise the remaining (0, y, 0, w)
+                    const y = track.values[i + 1];
+                    const w = track.values[i + 3];
+                    const len = Math.sqrt(y * y + w * w) || 1;
+                    track.values[i + 1] = y / len;
+                    track.values[i + 3] = w / len;
+                }
+                stripped++;
+                console.log(`    ↳ [${clipName}] Neutralised hips tilt for "${boneName}"`);
+            }
+        });
+
+        return stripped;
+    }
+
     /**
      * Retarget a clip's track names to match our main model's bone paths.
+     * Also applies root rotation stripping.
      */
     _retargetClip(clip, clipName) {
+        // ★ Phase 11: Strip root bone rotation BEFORE retargeting
+        this._stripRootRotationFromClip(clip, clipName);
+
         let remapped = 0;
         const newTracks = [];
 
@@ -305,18 +392,16 @@ export class Player {
 
             const parts = nodePath.split('/');
             const boneName = parts[parts.length - 1];
+            const bName = boneName.toLowerCase();
 
-            // Ignore top-level Node rotations/positions to fix 90-degree tilts from Mixamo exports
-            if (boneName.toLowerCase() === 'armature' || boneName.toLowerCase() === 'scene') {
-                return;
-            }
-
-            // For the Jump animation, remove hip position/rotation to fix "flying forward in sleep position"
-            if (clipName === 'Jump') {
-                if (boneName.toLowerCase().includes('hips')) {
-                    if (property === '.position' || property === '.quaternion') {
-                        return; // strip root motion and rotation from jump
-                    }
+            // For the Jump animation ONLY: lock the hips X/Z position to prevent
+            // forward flying, but KEEP the Y (vertical arc).
+            if (clipName === 'Jump' && bName.includes('hips') && property === '.position') {
+                const startX = track.values[0];
+                const startZ = track.values[2];
+                for (let i = 0; i < track.values.length; i += 3) {
+                    track.values[i] = startX;       // lock X
+                    track.values[i + 2] = startZ;   // lock Z
                 }
             }
 
@@ -397,10 +482,13 @@ export class Player {
     update(delta, cameraYaw) {
         if (!this.model) return;
 
+        // 0. Sync virtual joystick + sprint globals into InputManager
+        this._syncVirtualInputs();
+
         // 1. Check for C key toggle (sit/crouch)
         this.handleSitToggle();
 
-        // 2. Horizontal WASD movement
+        // 2. Movement (WASD + analog joystick, camera-relative)
         this.handleMovement(delta, cameraYaw);
 
         // 3. Jump & Gravity
@@ -413,6 +501,38 @@ export class Player {
         if (this.mixer) {
             this.mixer.update(delta);
         }
+
+        // ★ Phase 11 Fix: Force-lock model X and Z rotation every frame.
+        // This acts as a safety net — even if an animation track tries to
+        // tilt the model, we slam it back to upright.  Only Y (yaw) is
+        // allowed to change (set by handleMovement).
+        this.model.rotation.x = 0;
+        this.model.rotation.z = 0;
+    }
+
+    /**
+     * Merge virtual joystick + sprint button state into InputManager keys.
+     * The joystick sets window._joystickW/A/S/D booleans.
+     * We OR them with real keyboard so both work simultaneously.
+     */
+    _syncVirtualInputs() {
+        const im = this.inputManager;
+        // Joystick: set key if joystick active,
+        // but don't clear if real keyboard is holding the key
+        if (window._joystickW) im.setKey('w', true);
+        else if (!im.keys['w']) im.setKey('w', false);
+
+        if (window._joystickS) im.setKey('s', true);
+        else if (!im.keys['s']) im.setKey('s', false);
+
+        if (window._joystickA) im.setKey('a', true);
+        else if (!im.keys['a']) im.setKey('a', false);
+
+        if (window._joystickD) im.setKey('d', true);
+        else if (!im.keys['d']) im.setKey('d', false);
+
+        // Sprint
+        im.isSprinting = !!window._isSprinting;
     }
 
     /**
@@ -453,10 +573,15 @@ export class Player {
         }
     }
 
-    /** Helper: are any WASD keys held? */
+    /**
+     * Helper: are any WASD keys held OR is the analog joystick active?
+     */
     _isMoving() {
         const i = this.inputManager;
-        return i.isKeyDown('w') || i.isKeyDown('a') || i.isKeyDown('s') || i.isKeyDown('d');
+        const hasKeys = i.isKeyDown('w') || i.isKeyDown('a') || i.isKeyDown('s') || i.isKeyDown('d');
+        const hasJoystick = (window._joystickX !== undefined && window._joystickY !== undefined)
+            && (Math.abs(window._joystickX) > 0.01 || Math.abs(window._joystickY) > 0.01);
+        return hasKeys || hasJoystick;
     }
 
     /**
@@ -490,40 +615,102 @@ export class Player {
     }
 
     /**
-     * Directional WASD movement relative to camera yaw.
-     * Speed is reduced while crouching/sitting.
+     * Camera-relative movement supporting both WASD (keyboard) and analog joystick.
+     *
+     * Phase 11 Fix: Instead of only using boolean WASD, we now also read
+     * the analog joystick vector (window._joystickX, window._joystickY).
+     * The joystick gives us a 2D input vector that we rotate by the
+     * camera's yaw to get a world-space movement direction. This makes
+     * movement feel exactly like Free Fire — push the stick forward and the
+     * character moves AWAY from the camera, regardless of which direction
+     * the camera is facing.
+     *
+     * Math:
+     *   inputAngle = atan2(joystickX, joystickY)
+     *   targetYaw  = cameraYaw + inputAngle
+     *   moveDir    = (sin(targetYaw), 0, cos(targetYaw))
+     *
+     * The character model then smoothly rotates to face targetYaw using lerp.
      */
     handleMovement(delta, cameraYaw) {
         const input = this.inputManager;
 
-        const w = input.isKeyDown('w');
-        const s = input.isKeyDown('s');
-        const a = input.isKeyDown('a');
-        const d = input.isKeyDown('d');
+        // ── Build an input vector from both sources ──
 
-        if (!w && !s && !a && !d) return;
+        // Source 1: WASD keyboard → {-1, 0, +1} grid
+        let kx = 0, ky = 0;
+        if (input.isKeyDown('w')) ky += 1;
+        if (input.isKeyDown('s')) ky -= 1;
+        if (input.isKeyDown('d')) kx += 1;
+        if (input.isKeyDown('a')) kx -= 1;
 
-        const forwardX = -Math.sin(cameraYaw);
-        const forwardZ = -Math.cos(cameraYaw);
-        const rightX = Math.cos(cameraYaw);
-        const rightZ = -Math.sin(cameraYaw);
+        // Source 2: Analog joystick → continuous [-1, 1]
+        const jx = window._joystickX || 0;
+        const jy = window._joystickY || 0;
 
-        let dx = 0, dz = 0;
-        if (w) { dx += forwardX; dz += forwardZ; }
-        if (s) { dx -= forwardX; dz -= forwardZ; }
-        if (d) { dx += rightX; dz += rightZ; }
-        if (a) { dx -= rightX; dz -= rightZ; }
+        // Combine: prefer joystick if it has stronger input, otherwise use keys.
+        // This prevents double-speed when both are active simultaneously.
+        let ix, iy;
+        const jMag = Math.sqrt(jx * jx + jy * jy);
+        const kMag = Math.sqrt(kx * kx + ky * ky);
+
+        if (jMag > 0.01 && jMag >= kMag) {
+            // Joystick takes priority (analog, more precise)
+            ix = jx;
+            iy = jy;
+        } else if (kMag > 0) {
+            // Keyboard
+            ix = kx;
+            iy = ky;
+        } else {
+            return; // No input → no movement
+        }
+
+        // Normalise the input vector (cap magnitude at 1)
+        const inputMag = Math.sqrt(ix * ix + iy * iy);
+        if (inputMag > 1) { ix /= inputMag; iy /= inputMag; }
+
+        // ── Camera-relative direction ──
+        // inputAngle: angle of the input stick relative to "forward" (0° = up on screen)
+        //   atan2(x, y) gives 0 when pointing forward, positive CW
+        const inputAngle = Math.atan2(ix, iy);
+
+        // targetYaw: world-space direction = camera's yaw + input angle
+        // CameraController.yaw grows when looking LEFT (negative mouse),
+        // so adding the input angle rotates relative to where the camera faces.
+        const targetYaw = cameraYaw + inputAngle;
+
+        // World-space movement direction from targetYaw
+        // -sin and -cos because Three.js default forward is -Z
+        const dx = -Math.sin(targetYaw);
+        const dz = -Math.cos(targetYaw);
 
         this.moveDirection.set(dx, 0, dz).normalize();
 
-        // Use reduced speed while sitting
-        const speed = this.isSitting ? this.crouchSpeed : this.moveSpeed;
-        this.model.position.addScaledVector(this.moveDirection, speed * delta);
+        // ── Speed selection ──
+        let speed = this.moveSpeed;
+        if (this.isSitting) speed = this.crouchSpeed;
+        else if (this.inputManager.isSprinting) speed = this.sprintSpeed;
 
-        // Rotate character to face movement direction
+        // Scale speed by input magnitude (analog joystick = proportional speed)
+        const speedMul = Math.min(inputMag, 1.0);
+        this.model.position.addScaledVector(this.moveDirection, speed * speedMul * delta);
+
+        // ── Smooth model rotation to face movement direction ──
+        // We want the character to smoothly turn to face `targetYaw`
         if (this.moveDirection.lengthSq() > 0.001) {
-            const angle = Math.atan2(this.moveDirection.x, this.moveDirection.z);
-            this.model.rotation.y = angle;
+            // The model's forward is along its local -Z, which corresponds to
+            // rotation.y = atan2(moveDir.x, moveDir.z) + PI
+            // But since moveDir is already (-sin(θ), 0, -cos(θ)), let's use:
+            const faceAngle = Math.atan2(this.moveDirection.x, this.moveDirection.z);
+
+            // Smooth rotation via shortest-path lerp
+            let diff = faceAngle - this.model.rotation.y;
+            // Wrap to [-PI, PI]
+            while (diff > Math.PI) diff -= 2 * Math.PI;
+            while (diff < -Math.PI) diff += 2 * Math.PI;
+
+            this.model.rotation.y += diff * Math.min(1, this.rotationSmoothing * delta);
         }
     }
 }
