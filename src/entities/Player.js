@@ -96,7 +96,7 @@ export class Player {
             mass: 75,
             shape: playerShape,
             fixedRotation: true,
-            position: new CANNON.Vec3(0, 100, 0)
+            position: new CANNON.Vec3(0, 5, 0) // Character ab zameen ke paas se start hoga
         });
 
         this.body.linearDamping = 0.9;
@@ -193,27 +193,35 @@ export class Player {
     handleJump(delta) {
         const group = this.playerGroup;
 
+        // Ground check ka simple jugad (Jab tak Raycasting nahi lagate)
+        // Agar body ki velocity Y axis pe 0 ke karib hai, matlab wo zameen pe hai
+        if (Math.abs(this.body.velocity.y) < 0.1) {
+            this.isGrounded = true;
+            if (this.isJumping) {
+                this.isJumping = false;
+                // Idle ya Run pe wapas jao
+                this.animController.fadeToAction(this.inputManager.isMoving() ? 'Run' : 'Idle');
+            }
+        }
+
         if (this.inputManager.isJumpPressed() && this.isGrounded) {
-            this.velocityY = this.jumpForce;
+            // Apply impulse to the CANNON body, not manual position!
+            this.body.applyImpulse(new CANNON.Vec3(0, this.jumpForce, 0), this.body.position);
             this.isGrounded = false;
 
-            // Cancel sit if jumping
             if (this.isSitting) {
-                this.isSitting = false;
-                const sitBtn = document.getElementById('btn-sit');
-                if (sitBtn) {
-                    sitBtn.classList.remove('active');
-                    sitBtn.textContent = 'Sit';
-                }
+                this.toggleSit(); // Stand up if jumping
             }
 
             this.isJumping = true;
             this.animController.fadeToAction('Jump');
         }
 
-        // Gravity — applied to the GROUP position
-        this.velocityY -= this.gravity * delta;
-        group.position.y += this.velocityY * delta;
+        // IMPORTANT: Mesh (Visual) ko Physics Body ki jagah par chipkao
+        group.position.copy(this.body.position);
+        
+        // Character ki height offset (taaki pao zameen ke andar na ghusein)
+        group.position.y -= 0.9 * this.animController.playerScale; 
     }
 
     // ----------------------------------------------------------------
