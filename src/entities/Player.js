@@ -8,23 +8,19 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
  * camera-relative movement (both WASD & analog joystick),
  * jump, sit/crouch, and smooth crossfading.
  *
- * Animation files (loaded separately, NOT embedded in character.glb):
- *   /models/idle.glb   → default standing pose
- *   /models/run.glb    → walking / running
- *   /models/jump.glb   → jump (plays once)
- *   /models/sit.glb    → sit / crouch (toggle with C key or UI button)
+ * Phase 13 — Wrapper Group Architecture:
  *
- * Movement:
- *   W/A/S/D → directional movement relative to camera yaw
- *   Joystick → analog 360° camera-relative movement
- *   Space   → jump
- *   C       → toggle sit/crouch
+ *   scene
+ *     └─ playerGroup  (THREE.Group — owns position & Y-rotation)
+ *          └─ model   (gltf.scene — counter-rotated on X to fix Mixamo offset)
+ *               └─ Armature  (animations play here naturally)
+ *                    └─ mixamorigHips → bones…
  *
- * Phase 11 Fixes:
- *   1. FBX Animation Rotation Fix — strips root bone rotation offsets
- *      from Mixamo exports and locks model X/Z rotation in the update loop.
- *   2. Camera-Relative Joystick — uses analog joystick vector + camera yaw
- *      to compute a true 360° movement direction & smooth model facing.
+ *   The Mixamo FBX→GLTF pipeline bakes a -90° X rotation into the Armature.
+ *   Instead of hacking the animation tracks, we let them play naturally and
+ *   apply a permanent +90° X-rotation on `model` (the visual child).
+ *   `playerGroup` is the logical entity: all movement, positioning,
+ *   raycasting, and camera-syncing reference `playerGroup.position`.
  */
 export class Player {
     constructor(scene, physicsWorld, inputManager) {
@@ -32,7 +28,9 @@ export class Player {
         this.physicsWorld = physicsWorld;
         this.inputManager = inputManager;
 
-        this.model = null;
+        this.playerGroup = null;  // ★ Logical container — owns position & yaw
+        this.model = null;        // Visual child — plays animations
+
         this.body = null;
 
         // =====================================================
@@ -79,8 +77,6 @@ export class Player {
         // HTML BUTTON BINDING (Sit button)
         // =====================================================
         this._setupSitButton();
-
-        this.axesHelper = null;
     }
 
     // ----------------------------------------------------------------
@@ -115,10 +111,7 @@ export class Player {
 
     async init() {
         this.setupPhysics();
-        // Load idle.glb as the PRIMARY model — it has both the Mixamo
-        // rigged mesh (skeleton + skin) AND the idle animation clip.
         await this.loadPrimaryModel('/models/idle.glb');
-        // Then load the remaining animation clips from separate files
         await this.loadExtraAnimations();
     }
 
@@ -141,11 +134,16 @@ export class Player {
 
     /**
      * Load idle.glb as the PRIMARY model.
-     * Why idle.glb? Because Mixamo animation exports include:
-     *   - The full character mesh (skin)
-     *   - The complete skeleton (65+ bones with names like mixamorigHips)
-     *   - The animation clip itself
-     * So idle.glb gives us everything we need as the base model.
+     *
+     * Phase 13 — Wrapper Group:
+     *   1. Create `playerGroup` (THREE.Group) — the logical entity.
+     *   2. Load gltf.scene as `model` — the visual mesh with skeleton.
+     *   3. Apply counter-rotation: `model.rotation.x = Math.PI / 2`
+     *      to permanently cancel the -90° X that Mixamo animations bake
+     *      into the Armature node. (If character ends up upside-down,
+     *      flip to -Math.PI / 2.)
+     *   4. Parent: scene → playerGroup → model.
+     *   5. All position/movement goes on playerGroup, NOT model.
      */
     loadPrimaryModel(url) {
         return new Promise((resolve) => {
@@ -153,10 +151,30 @@ export class Player {
             loader.load(
                 url,
                 (gltf) => {
+                    // ── 1. Create the wrapper group ──
+                    this.playerGroup = new THREE.Group();
+                    this.playerGroup.name = 'PlayerGroup';
+
+                    // ── 2. Store the visual model ──
                     this.model = gltf.scene;
 
-                    // Scale
+                    // Scale the model
                     this.model.scale.set(this.playerScale, this.playerScale, this.playerScale);
+
+                    // ── 3. Counter-rotation fix for Mixamo ──
+                    // Mixamo FBX→GLTF bakes -90° X into the Armature.
+                    // We counter it with +90° X on the model container.
+                    // If the character appears upside-down, change to -Math.PI / 2.
+                    this.model.rotation.x = -Math.PI / 2;
+
+                    // ── 4. Parent model INTO the group ──
+                    this.playerGroup.add(this.model);
+
+                    // ── 5. Add group to scene ──
+                    this.scene.add(this.playerGroup);
+
+                    // ── Spawn position (on the GROUP, not the model) ──
+                    this.playerGroup.position.set(0, 100, 0);
 
                     // Debug
                     const box = new THREE.Box3().setFromObject(this.model);
@@ -166,7 +184,6 @@ export class Player {
                     console.log('  Scale :', this.playerScale);
                     console.log('  Height:', size.y.toFixed(2), 'units');
 
-                    // Count nodes to confirm skeleton is present
                     let nodeCount = 0;
                     this.model.traverse(() => nodeCount++);
                     console.log('  Nodes :', nodeCount, nodeCount > 30 ? '✓ Skeleton found!' : '✗ No skeleton!');
@@ -179,16 +196,10 @@ export class Player {
                         }
                     });
 
-                    // Spawn high — gravity drops to terrain
-                    this.model.position.set(0, 100, 0);
+                    // Debug axes on the GROUP (so they stay upright)
+                    this.playerGroup.add(new THREE.AxesHelper(2));
 
-                    // Debug axes
-                    this.axesHelper = new THREE.AxesHelper(2);
-                    this.model.add(this.axesHelper);
-
-                    this.scene.add(this.model);
-
-                    // Create the mixer on this model (which HAS the skeleton)
+                    // Create the mixer on the MODEL (which HAS the skeleton)
                     this.mixer = new THREE.AnimationMixer(this.model);
 
                     // Listen for 'finished' event (for Jump animation)
@@ -200,11 +211,9 @@ export class Player {
                         }
                     });
 
-                    // ★ Extract the IDLE animation clip from this same file ★
+                    // ★ Extract the IDLE animation clip — NO track splicing needed ★
                     if (gltf.animations && gltf.animations.length > 0) {
                         const idleClip = gltf.animations[0];
-                        // Strip root rotation from idle too, just in case
-                        this._stripRootRotationFromClip(idleClip, 'Idle');
                         this.actions['Idle'] = this.mixer.clipAction(idleClip);
                         this.actions['Idle'].loop = THREE.LoopRepeat;
                         this.actions['Idle'].play();
@@ -216,6 +225,7 @@ export class Player {
                     this._buildBonePathMap();
 
                     console.log('Primary model loaded:', url);
+                    console.log('  ★ Wrapper Group active — counter-rotation: model.rotation.x =', this.model.rotation.x.toFixed(4));
                     resolve();
                 },
                 null,
@@ -226,9 +236,8 @@ export class Player {
 
     /**
      * Load remaining animation clips from separate .glb files.
-     * Since they come from Mixamo too, their bone names should match
-     * the skeleton in our primary model (idle.glb). We retarget just in
-     * case the path structure differs slightly between exports.
+     * NO track splicing — animations play naturally. The counter-rotation
+     * on the model inside the wrapper group handles the Mixamo offset.
      */
     async loadExtraAnimations() {
         if (!this.mixer) {
@@ -306,82 +315,11 @@ export class Player {
         console.log(`  Bone path map: ${Object.keys(this._bonePathMap).length} nodes`);
     }
 
-    // ----------------------------------------------------------------
-    // FBX Animation Rotation Fix (Phase 11)
-    // ----------------------------------------------------------------
-
-    /**
-     * Strips or neutralises root-bone rotation offsets from Mixamo FBX→GLTF clips.
-     *
-     * The problem: Mixamo FBX exports bake a -90° X-axis rotation into root
-     * nodes (Armature, Scene, or the Hips bone) because FBX uses Y-up while
-     * the original rig was Z-up. When those clips play on our GLTF model
-     * (which is already Y-up), the character lies flat on the ground.
-     *
-     * Fix: For every quaternion track whose target node is a root-level node
-     * (Armature, Scene, or empty-named), we replace ALL keyframe values with
-     * the identity quaternion (0,0,0,1). For the Hips bone, we neutralise
-     * only the X and Z components of the quaternion to strip tilt while
-     * preserving the Y-axis turn the animation may contain.
-     */
-    _stripRootRotationFromClip(clip, clipName) {
-        const rootNames = ['armature', 'scene', ''];
-        let stripped = 0;
-
-        clip.tracks.forEach((track) => {
-            const lastDot = track.name.lastIndexOf('.');
-            const nodePath = track.name.substring(0, lastDot);
-            const property = track.name.substring(lastDot); // e.g. '.quaternion'
-
-            // Only act on quaternion (rotation) tracks
-            if (property !== '.quaternion') return;
-
-            const parts = nodePath.split('/');
-            const boneName = parts[parts.length - 1];
-            const bNameL = boneName.toLowerCase();
-
-            // Root-level containers (Armature, Scene, empty) → force identity
-            if (rootNames.includes(bNameL)) {
-                for (let i = 0; i < track.values.length; i += 4) {
-                    track.values[i] = 0; // x
-                    track.values[i + 1] = 0; // y
-                    track.values[i + 2] = 0; // z
-                    track.values[i + 3] = 1; // w
-                }
-                stripped++;
-                console.log(`    ↳ [${clipName}] Zeroed root quaternion for "${boneName}"`);
-            }
-
-            // Hips bone — neutralise tilt (X,Z) but keep Y rotation
-            if (bNameL.includes('hips')) {
-                for (let i = 0; i < track.values.length; i += 4) {
-                    // Keep only the Y-axis component of the quaternion
-                    // A pure Y rotation quaternion has x=0, z=0
-                    track.values[i] = 0; // x → no tilt
-                    track.values[i + 2] = 0; // z → no roll
-                    // Re-normalise the remaining (0, y, 0, w)
-                    const y = track.values[i + 1];
-                    const w = track.values[i + 3];
-                    const len = Math.sqrt(y * y + w * w) || 1;
-                    track.values[i + 1] = y / len;
-                    track.values[i + 3] = w / len;
-                }
-                stripped++;
-                console.log(`    ↳ [${clipName}] Neutralised hips tilt for "${boneName}"`);
-            }
-        });
-
-        return stripped;
-    }
-
     /**
      * Retarget a clip's track names to match our main model's bone paths.
-     * Also applies root rotation stripping.
+     * No track splicing — the wrapper group handles the Mixamo rotation offset.
      */
     _retargetClip(clip, clipName) {
-        // ★ Phase 11: Strip root bone rotation BEFORE retargeting
-        this._stripRootRotationFromClip(clip, clipName);
-
         let remapped = 0;
         const newTracks = [];
 
@@ -435,7 +373,7 @@ export class Player {
         const newAction = this.actions[name];
         if (!newAction) return;
         if (newAction === this.currentAction) {
-            newAction.timeScale = 1; // Ensure it runs in case it was paused
+            newAction.timeScale = 1;
             return;
         }
 
@@ -460,7 +398,6 @@ export class Player {
     toggleSit() {
         this.isSitting = !this.isSitting;
 
-        // Update the UI button visual
         const sitBtn = document.getElementById('btn-sit');
         if (sitBtn) {
             sitBtn.classList.toggle('active', this.isSitting);
@@ -470,7 +407,6 @@ export class Player {
         if (this.isSitting) {
             this.fadeToAction('Sit');
         } else {
-            // Return to idle or run based on movement
             this.fadeToAction(this._isMoving() ? 'Run' : 'Idle');
         }
     }
@@ -480,7 +416,7 @@ export class Player {
     // ----------------------------------------------------------------
 
     update(delta, cameraYaw) {
-        if (!this.model) return;
+        if (!this.playerGroup) return;
 
         // 0. Sync virtual joystick + sprint globals into InputManager
         this._syncVirtualInputs();
@@ -497,41 +433,29 @@ export class Player {
         // 4. Animation state machine
         this.updateAnimationState();
 
-        // 5. Tick the mixer
+        // 5. Tick the animation mixer
         if (this.mixer) {
             this.mixer.update(delta);
         }
 
-        // ★ Phase 11 Fix: Force-lock model X and Z rotation every frame.
-        // This acts as a safety net — even if an animation track tries to
-        // tilt the model, we slam it back to upright.  Only Y (yaw) is
-        // allowed to change (set by handleMovement).
-        this.model.rotation.x = 0;
-        this.model.rotation.z = 0;
+        // ★ Phase 13: NO rotation lock needed on model!
+        // The model's rotation.x stays at Math.PI/2 permanently (counter-rotation).
+        // The animation can do whatever it wants to the Armature inside —
+        // the wrapper group architecture handles it structurally.
     }
 
     /**
-     * Merge virtual joystick + sprint button state into InputManager keys.
-     * The joystick sets window._joystickW/A/S/D booleans.
-     * We OR them with real keyboard so both work simultaneously.
+     * Merge virtual joystick + sprint button state into InputManager.
+     * Uses setVirtualKey() for separated keyboard/joystick state (Phase 12 fix).
      */
     _syncVirtualInputs() {
         const im = this.inputManager;
-        // Joystick: set key if joystick active,
-        // but don't clear if real keyboard is holding the key
-        if (window._joystickW) im.setKey('w', true);
-        else if (!im.keys['w']) im.setKey('w', false);
 
-        if (window._joystickS) im.setKey('s', true);
-        else if (!im.keys['s']) im.setKey('s', false);
+        im.setVirtualKey('w', !!window._joystickW);
+        im.setVirtualKey('s', !!window._joystickS);
+        im.setVirtualKey('a', !!window._joystickA);
+        im.setVirtualKey('d', !!window._joystickD);
 
-        if (window._joystickA) im.setKey('a', true);
-        else if (!im.keys['a']) im.setKey('a', false);
-
-        if (window._joystickD) im.setKey('d', true);
-        else if (!im.keys['d']) im.setKey('d', false);
-
-        // Sprint
         im.isSprinting = !!window._isSprinting;
     }
 
@@ -542,7 +466,6 @@ export class Player {
         const cDown = this.inputManager.isKeyDown('c');
 
         if (cDown && !this._cKeyWasDown) {
-            // C was just pressed this frame
             this.toggleSit();
         }
 
@@ -553,17 +476,16 @@ export class Player {
      * Animation state machine: decides which animation to play.
      */
     updateAnimationState() {
-        if (this.isJumping) return;   // Don't interrupt jump
+        if (this.isJumping) return;
 
         const moving = this._isMoving();
 
         if (this.isSitting) {
             this.fadeToAction('Sit');
-            // Pause the 'Sit' animation if the player stops moving
             if (this.actions['Sit']) {
                 this.actions['Sit'].timeScale = moving ? 1 : 0;
             }
-            return;   // Don't interrupt sit (user must toggle off)
+            return;
         }
 
         if (moving) {
@@ -586,6 +508,7 @@ export class Player {
 
     /**
      * Spacebar / mobile button jump + gravity.
+     * ★ Position is on playerGroup, NOT model.
      */
     handleJump(delta) {
         const input = this.inputManager;
@@ -596,7 +519,6 @@ export class Player {
             this.isGrounded = false;
             this._jumpRequested = false;
 
-            // Cancel sit if jumping
             if (this.isSitting) {
                 this.isSitting = false;
                 const sitBtn = document.getElementById('btn-sit');
@@ -609,108 +531,76 @@ export class Player {
             }
         }
 
-        // Gravity
+        // Gravity — applied to the GROUP
         this.velocityY -= this.gravity * delta;
-        this.model.position.y += this.velocityY * delta;
+        this.playerGroup.position.y += this.velocityY * delta;
     }
 
     /**
      * Camera-relative movement supporting both WASD (keyboard) and analog joystick.
      *
-     * Phase 11 Fix: Instead of only using boolean WASD, we now also read
-     * the analog joystick vector (window._joystickX, window._joystickY).
-     * The joystick gives us a 2D input vector that we rotate by the
-     * camera's yaw to get a world-space movement direction. This makes
-     * movement feel exactly like Free Fire — push the stick forward and the
-     * character moves AWAY from the camera, regardless of which direction
-     * the camera is facing.
-     *
-     * Math:
-     *   inputAngle = atan2(joystickX, joystickY)
-     *   targetYaw  = cameraYaw + inputAngle
-     *   moveDir    = (sin(targetYaw), 0, cos(targetYaw))
-     *
-     * The character model then smoothly rotates to face targetYaw using lerp.
+     * ★ All position and rotation changes go to playerGroup, NOT model.
+     *   model is just a visual child with a fixed counter-rotation.
      */
     handleMovement(delta, cameraYaw) {
         const input = this.inputManager;
 
         // ── Build an input vector from both sources ──
-
-        // Source 1: WASD keyboard → {-1, 0, +1} grid
         let kx = 0, ky = 0;
         if (input.isKeyDown('w')) ky += 1;
         if (input.isKeyDown('s')) ky -= 1;
         if (input.isKeyDown('d')) kx += 1;
         if (input.isKeyDown('a')) kx -= 1;
 
-        // Source 2: Analog joystick → continuous [-1, 1]
         const jx = window._joystickX || 0;
         const jy = window._joystickY || 0;
 
-        // Combine: prefer joystick if it has stronger input, otherwise use keys.
-        // This prevents double-speed when both are active simultaneously.
         let ix, iy;
         const jMag = Math.sqrt(jx * jx + jy * jy);
         const kMag = Math.sqrt(kx * kx + ky * ky);
 
         if (jMag > 0.01 && jMag >= kMag) {
-            // Joystick takes priority (analog, more precise)
             ix = jx;
             iy = jy;
         } else if (kMag > 0) {
-            // Keyboard
             ix = kx;
             iy = ky;
         } else {
-            return; // No input → no movement
+            return;
         }
 
-        // Normalise the input vector (cap magnitude at 1)
         const inputMag = Math.sqrt(ix * ix + iy * iy);
         if (inputMag > 1) { ix /= inputMag; iy /= inputMag; }
 
         // ── Camera-relative direction ──
-        // inputAngle: angle of the input stick relative to "forward" (0° = up on screen)
-        //   atan2(x, y) gives 0 when pointing forward, positive CW
         const inputAngle = Math.atan2(ix, iy);
-
-        // targetYaw: world-space direction = camera's yaw + input angle
-        // CameraController.yaw grows when looking LEFT (negative mouse),
-        // so adding the input angle rotates relative to where the camera faces.
         const targetYaw = cameraYaw + inputAngle;
 
-        // World-space movement direction from targetYaw
-        // -sin and -cos because Three.js default forward is -Z
         const dx = -Math.sin(targetYaw);
         const dz = -Math.cos(targetYaw);
 
         this.moveDirection.set(dx, 0, dz).normalize();
 
-        // ── Speed selection ──
+        // ── Speed ──
         let speed = this.moveSpeed;
         if (this.isSitting) speed = this.crouchSpeed;
         else if (this.inputManager.isSprinting) speed = this.sprintSpeed;
 
-        // Scale speed by input magnitude (analog joystick = proportional speed)
         const speedMul = Math.min(inputMag, 1.0);
-        this.model.position.addScaledVector(this.moveDirection, speed * speedMul * delta);
 
-        // ── Smooth model rotation to face movement direction ──
-        // We want the character to smoothly turn to face `targetYaw`
+        // ★ Move the GROUP (not the model)
+        this.playerGroup.position.addScaledVector(this.moveDirection, speed * speedMul * delta);
+
+        // ── Smooth rotation to face movement direction ──
+        // ★ Rotate the GROUP's Y (not the model — model.rotation.x is the counter-rotation)
         if (this.moveDirection.lengthSq() > 0.001) {
-            // The model's forward is along its local -Z, which corresponds to
-            // rotation.y = atan2(moveDir.x, moveDir.z) + PI
-            // But since moveDir is already (-sin(θ), 0, -cos(θ)), let's use:
             const faceAngle = Math.atan2(this.moveDirection.x, this.moveDirection.z);
 
-            // Smooth rotation via shortest-path lerp
-            let diff = faceAngle - this.model.rotation.y;
-            // Wrap to [-PI, PI]
+            let diff = faceAngle - this.playerGroup.rotation.y;
             while (diff > Math.PI) diff -= 2 * Math.PI;
             while (diff < -Math.PI) diff += 2 * Math.PI;
 
-            this.model.rotation.y += diff * Math.min(1, this.rotationSmoothing * delta);
+            this.playerGroup.rotation.y += diff * Math.min(1, this.rotationSmoothing * delta);
         }
     }
 }

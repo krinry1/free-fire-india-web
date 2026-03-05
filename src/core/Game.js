@@ -122,9 +122,9 @@ export class Game {
         // 5. Wall collision (push player away from walls)
         this.resolveWallCollision();
 
-        // 6. Camera follows the player
-        if (this.player.model) {
-            this.cameraController.update(this.player.model.position);
+        // 6. Camera follows the player (use playerGroup — the logical entity)
+        if (this.player.playerGroup) {
+            this.cameraController.update(this.player.playerGroup.position);
         }
 
         // 7. World tick
@@ -149,7 +149,7 @@ export class Game {
      */
     clampPlayerToGround() {
         const player = this.player;
-        const playerModel = player.model;
+        const playerModel = player.playerGroup; // ★ use the group, not the visual model
         if (!playerModel) return;
 
         const mapMeshes = this.world.mapMeshes;
@@ -185,7 +185,7 @@ export class Game {
      * This prevents walking through walls and creates a "sliding" effect.
      */
     resolveWallCollision() {
-        const playerModel = this.player.model;
+        const playerModel = this.player.playerGroup; // ★ use the group, not the visual model
         if (!playerModel) return;
 
         const mapMeshes = this.world.mapMeshes;
