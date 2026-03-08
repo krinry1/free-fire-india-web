@@ -8,23 +8,28 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
  * and crossfading. Owns the 3D model hierarchy.
  *
  * ════════════════════════════════════════════════════════════════════
- * DOUBLE WRAPPER HIERARCHY  (Phase 14 — Foolproof Mixamo Rotation Fix)
+ * ARMATURE QUATERNION LOCK  (Phase 14 fix — final)
  * ════════════════════════════════════════════════════════════════════
  *
  *   playerGroup             ← Player.js moves/rotates THIS (position, yaw)
- *     └─ rotationOffsetGroup  ← permanent counter-rotation (rotation.x)
+ *     └─ rotationOffsetGroup  ← structural wrapper (identity rotation)
  *          └─ model           ← gltf.scene — AnimationMixer targets THIS
- *               └─ Armature     ← Mixamo bakes -90°X here via animation tracks
+ *               └─ Armature     ← we LOCK this node's quaternion every frame
  *                    └─ mixamorigHips → bones…
  *
- * WHY IT WORKS:
- *   The AnimationMixer can only write to nodes it finds by traversing `model`
- *   and its children. `rotationOffsetGroup` is a PARENT of `model` — the mixer
- *   has zero knowledge of it and cannot overwrite its rotation.
+ * THE PROBLEM:
+ *   Idle.glb (primary model) is already Y-up — no rotation offset.
+ *   External clips (Run, Jump, Sit) from separate Mixamo exports bake
+ *   a +90° X rotation into the Armature node's quaternion tracks.
+ *   A single fixed counter-rotation can't fix both simultaneously.
  *
- *   So even though animations rotate the Armature -90° on X every frame,
- *   `rotationOffsetGroup.rotation.x = -Math.PI / 2` (or +PI/2) stays permanent,
- *   and the two cancel out → character stands upright.
+ * THE FIX:
+ *   1. At load time, capture the Armature's REST-POSE quaternion.
+ *   2. After EVERY mixer.update(), force it back to the rest-pose value.
+ *   This strips the coordinate-conversion rotation from external clips
+ *   while leaving the Idle animation (and bind pose) untouched.
+ *   All actual animation data lives on CHILD bones (Hips, Spine, etc.),
+ *   which are unaffected by this lock.
  * ════════════════════════════════════════════════════════════════════
  */
 export class AnimationController {
@@ -38,7 +43,7 @@ export class AnimationController {
 
         // ── Double Wrapper nodes ──
         this.playerGroup = null;           // Logical entity (position + yaw)
-        this.rotationOffsetGroup = null;   // Counter-rotation (never touched by mixer)
+        this.rotationOffsetGroup = null;   // Structural wrapper (identity rotation)
         this.model = null;                 // Visual mesh (mixer root)
 
         // ── Animation ──
@@ -46,6 +51,10 @@ export class AnimationController {
         this.actions = {};        // { Idle, Run, Jump, Sit }
         this.currentAction = null;
         this.fadeTime = 0.25;     // Default crossfade duration (seconds)
+
+        // ── Armature Quaternion Lock ──
+        this._armatureNode = null;         // Cached reference to the Armature Object3D
+        this._armatureRestQuat = new THREE.Quaternion(); // Its bind-pose quaternion
 
         // ── Finished callback ──
         this._onFinishedCallback = null;
@@ -82,16 +91,12 @@ export class AnimationController {
                     this.playerGroup = new THREE.Group();
                     this.playerGroup.name = 'PlayerGroup';
 
-                    // ═══ 2. rotationOffsetGroup — counter-rotation ═══
+                    // ═══ 2. rotationOffsetGroup — structural wrapper ═══
+                    // NO fixed counter-rotation here! The Armature Quaternion
+                    // Lock (in update()) handles the rotation difference
+                    // between idle.glb and external animation files.
                     this.rotationOffsetGroup = new THREE.Group();
                     this.rotationOffsetGroup.name = 'RotationOffset';
-
-                    // Mixamo FBX→GLTF bakes -90° X into the Armature node.
-                    // We counter it here. The mixer CANNOT reach this node.
-                    //
-                    // ★ If the character appears UPSIDE-DOWN, flip the sign:
-                    //   try  Math.PI / 2  instead of  -Math.PI / 2
-                    this.rotationOffsetGroup.rotation.x = -Math.PI / 2;
 
                     // ═══ 3. model — the visual mesh ═══
                     this.model = gltf.scene;
@@ -143,7 +148,28 @@ export class AnimationController {
                         }
                     });
 
-                    // ═══ 6. Idle animation from this file ═══
+                    // ═══ 6. ARMATURE QUATERNION LOCK — capture rest pose ═══
+                    // Find the Armature node (Mixamo names it 'Armature')
+                    this._armatureNode = null;
+                    this.model.traverse((node) => {
+                        if (!this._armatureNode && node.name &&
+                            node.name.toLowerCase().startsWith('armature')) {
+                            this._armatureNode = node;
+                            this._armatureRestQuat.copy(node.quaternion);
+                        }
+                    });
+                    if (this._armatureNode) {
+                        console.log('  ★ Armature found:', this._armatureNode.name);
+                        console.log('    Rest quaternion:',
+                            this._armatureRestQuat.x.toFixed(4),
+                            this._armatureRestQuat.y.toFixed(4),
+                            this._armatureRestQuat.z.toFixed(4),
+                            this._armatureRestQuat.w.toFixed(4));
+                    } else {
+                        console.warn('  ✗ Armature node NOT found — quaternion lock disabled');
+                    }
+
+                    // ═══ 7. Idle animation from this file ═══
                     if (gltf.animations && gltf.animations.length > 0) {
                         const clip = gltf.animations[0];
                         this.actions['Idle'] = this.mixer.clipAction(clip);
@@ -156,8 +182,6 @@ export class AnimationController {
                     // Build bone path map for retargeting extra animations
                     this._buildBonePathMap();
 
-                    console.log('  ★ rotationOffsetGroup.rotation.x =',
-                        this.rotationOffsetGroup.rotation.x.toFixed(4), 'rad');
                     console.log('  Primary model loaded ✓');
                     resolve();
                 },
@@ -334,10 +358,24 @@ export class AnimationController {
     // Per-frame update
     // ----------------------------------------------------------------
 
-    /** Tick the AnimationMixer. Call once per frame. */
+    /**
+     * Tick the AnimationMixer, then lock the Armature quaternion.
+     *
+     * The lock runs AFTER the mixer so it overrides whatever rotation
+     * the current animation tried to apply to the Armature node.
+     * Child bones (Hips, Spine, Arms, Legs) are NOT affected — only
+     * the Armature container is locked. This means:
+     *   - Idle (no root offset): Armature stays at rest pose → upright ✓
+     *   - Jump/Run/Sit (have root offset): offset is stripped → upright ✓
+     */
     update(delta) {
         if (this.mixer) {
             this.mixer.update(delta);
+
+            // ★ ARMATURE QUATERNION LOCK — force rest-pose rotation
+            if (this._armatureNode) {
+                this._armatureNode.quaternion.copy(this._armatureRestQuat);
+            }
         }
     }
 }
