@@ -61,6 +61,9 @@ export class AnimationController {
 
         // ── Retargeting ──
         this._bonePathMap = {};
+
+        // ── Gun ──
+        this.gunModel = null;
     }
 
     /** Is the model loaded and hierarchy ready? */
@@ -75,6 +78,7 @@ export class AnimationController {
     async init() {
         await this.loadPrimaryModel('/models/idle.glb');
         await this.loadExtraAnimations();
+        await this.loadGun();
     }
 
     // ----------------------------------------------------------------
@@ -187,6 +191,53 @@ export class AnimationController {
                 },
                 null,
                 (err) => { console.error('Model load error:', err); resolve(); }
+            );
+        });
+    }
+
+    // ----------------------------------------------------------------
+    // Gun Loading
+    // ----------------------------------------------------------------
+
+    async loadGun() {
+        return new Promise((resolve) => {
+            const loader = new GLTFLoader();
+            loader.load(
+                '/models/free_fire_cobra_mp40_gun.glb',
+                (gltf) => {
+                    this.gunModel = gltf.scene;
+
+                    // Adjust these values as needed based on the specific gun model
+                    this.gunModel.scale.set(0.2, 0.2, 0.2);
+
+                    let rightHand = null;
+                    this.model.traverse((child) => {
+                        // Mixamo right hand bone is usually named "mixamorigRightHand"
+                        if (child.isBone && child.name.toLowerCase().includes('righthand')) {
+                            rightHand = child;
+                        }
+                    });
+
+                    if (rightHand) {
+                        rightHand.add(this.gunModel);
+
+                        // Fine-tune gun position and rotation relative to the hand bone
+                        // These exact values might need tweaking in-game
+                        this.gunModel.position.set(0, 10, 5);
+                        this.gunModel.rotation.set(0, Math.PI / 2, 0);
+
+                        console.log('  ★ Gun attached to right hand');
+                    } else {
+                        console.warn('  ✗ Right hand bone not found, could not attach gun');
+                    }
+
+                    resolve();
+                },
+                undefined,
+                (err) => {
+                    console.error('Error loading gun model:', err);
+                    resolve();
+                }
             );
         });
     }

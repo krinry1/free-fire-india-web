@@ -177,8 +177,11 @@ export class CameraController {
 
         // 4. Smoothly interpolate FOV for aiming zoom
         const targetFOV = this.isAiming ? this.aimFOV : this.normalFOV;
-        this.camera.fov += (targetFOV - this.camera.fov) * 0.15;
-        this.camera.updateProjectionMatrix();
+        const fovDiff = targetFOV - this.camera.fov;
+        if (Math.abs(fovDiff) > 0.01) {
+            this.camera.fov += fovDiff * 0.15;
+            this.camera.updateProjectionMatrix();
+        }
     }
 
     /**

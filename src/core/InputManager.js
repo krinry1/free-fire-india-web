@@ -24,6 +24,9 @@ export class InputManager {
         // ── Sprint ──
         this.isSprinting = false;
 
+        // ── R key (hold to sprint forward) ──
+        this._rKeyDown = false;
+
         // ── Jump button ──
         this._jumpBtnPressed = false;
 
@@ -31,16 +34,34 @@ export class InputManager {
         this._cKeyWasDown = false;
         this._sitJustPressed = false;
 
+        // ── Attack button / tracking (F key or Left Click) ──
+        this._attackBtnJustPressed = false;
+        this._attackBtnWasDown = false;
+        this._fKeyWasDown = false;
+        this._attackJustPressed = false;
+
         // ── Cached movement vector (recomputed each frame in update()) ──
         this._movement = { x: 0, y: 0, magnitude: 0 };
 
-        // ── Keyboard listeners ──
         window.addEventListener('keydown', (e) => {
             this.keys[e.key.toLowerCase()] = true;
         }, false);
         window.addEventListener('keyup', (e) => {
             this.keys[e.key.toLowerCase()] = false;
         }, false);
+
+        // ── Mouse Listeners (Left click to shoot — only when pointer is locked) ──
+        window.addEventListener('mousedown', (e) => {
+            if (e.button === 0 && document.pointerLockElement && e.target.tagName !== 'BUTTON') {
+                this._attackBtnJustPressed = true;
+                this._attackBtnWasDown = true;
+            }
+        });
+        window.addEventListener('mouseup', (e) => {
+            if (e.button === 0) {
+                this._attackBtnWasDown = false;
+            }
+        });
 
         // ── Mobile button bindings ──
         this._bindMobileButtons();
@@ -61,6 +82,18 @@ export class InputManager {
                 this._jumpBtnPressed = false;
             });
         }
+
+        const attackBtn = document.getElementById('btn-attack');
+        if (attackBtn) {
+            attackBtn.addEventListener('pointerdown', (e) => {
+                e.preventDefault();
+                this._attackBtnJustPressed = true;
+                this._attackBtnWasDown = true;
+            });
+            attackBtn.addEventListener('pointerup', () => {
+                this._attackBtnWasDown = false;
+            });
+        }
     }
 
     // ----------------------------------------------------------------
@@ -78,13 +111,22 @@ export class InputManager {
         this._virtualKeys['a'] = !!window._joystickA;
         this._virtualKeys['d'] = !!window._joystickD;
 
-        // Sprint toggle
-        this.isSprinting = !!window._isSprinting;
+        // Sprint: R key held OR mobile toggle
+        this._rKeyDown = this.keys['r'] === true;
+        this.isSprinting = this._rKeyDown || !!window._isSprinting;
 
         // Sit toggle detection (C key — fires only on the frame it's first pressed)
         const cDown = this.keys['c'] === true;
         this._sitJustPressed = cDown && !this._cKeyWasDown;
         this._cKeyWasDown = cDown;
+
+        // Attack detection (F key or left click or button — one-shot)
+        const fDown = this.keys['f'] === true;
+        const fJustPressed = fDown && !this._fKeyWasDown;
+        this._fKeyWasDown = fDown;
+
+        this._attackJustPressed = fJustPressed || this._attackBtnJustPressed;
+        this._attackBtnJustPressed = false; // reset UI button flag each frame
 
         // Cache the movement vector so getMovementVector() is O(1)
         this._movement = this._computeMovement();
@@ -126,6 +168,16 @@ export class InputManager {
     /** Was the Sit key (C) just pressed THIS frame? (one-shot toggle) */
     isSitJustPressed() {
         return this._sitJustPressed;
+    }
+
+    /** Was the Attack key (F or Left Click or Button) just pressed THIS frame? */
+    isAttackJustPressed() {
+        return this._attackJustPressed;
+    }
+
+    /** Is R key currently held down? (sprint-forward) */
+    isRKeyDown() {
+        return this._rKeyDown;
     }
 
     // ----------------------------------------------------------------

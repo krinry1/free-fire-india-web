@@ -4,6 +4,10 @@ import { Physics } from './Physics.js';
 import { Player } from '../entities/Player.js';
 import { InputManager } from './InputManager.js';
 import { CameraController } from './CameraController.js';
+import { NPC } from '../entities/NPC.js';
+
+// Reusable screen-center vector for raycasting (avoids per-frame allocation)
+const _screenCenter = new THREE.Vector2(0, 0);
 
 /**
  * Game Class
@@ -18,18 +22,18 @@ export class Game {
         this.scene = new THREE.Scene();
         const skyColor = new THREE.Color(0x87CEEB);
         this.scene.background = skyColor;
-        this.scene.fog = new THREE.Fog(skyColor, 50, 500);
+        this.scene.fog = new THREE.Fog(skyColor, 50, 300);
 
         // 2. Camera
         const aspect = window.innerWidth / window.innerHeight;
         this.camera = new THREE.PerspectiveCamera(75, aspect, 0.1, 1000);
 
         // 3. Renderer
-        this.renderer = new THREE.WebGLRenderer({ antialias: true });
+        this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
-        this.renderer.setPixelRatio(window.devicePixelRatio);
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
         this.renderer.shadowMap.enabled = true;
-        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        this.renderer.shadowMap.type = THREE.PCFShadowMap;
         this.container.appendChild(this.renderer.domElement);
 
         // 4. Resize
@@ -48,8 +52,15 @@ export class Game {
             this.scene
         );
 
-        // DEBUG: AxesHelper at world origin
-        this.scene.add(new THREE.AxesHelper(10));
+        // Reusable raycaster for shooting
+        this.shootRaycaster = new THREE.Raycaster();
+
+        // -------------------------------------------------------
+        // NPC Manager
+        // -------------------------------------------------------
+        this.npcs = [];
+        this.npcSpawnTimer = 0;
+        this.maxNpcs = 5;
 
         // -------------------------------------------------------
         // GROUND RAYCASTER
@@ -125,13 +136,109 @@ export class Game {
         // 6. Camera follows the player (use playerGroup — the logical entity)
         if (this.player.playerGroup) {
             this.cameraController.update(this.player.playerGroup.position);
+
+            // Handle Player Attacking (Shooting)
+            if (this.inputManager.isAttackJustPressed()) {
+                this.shootGun();
+            }
         }
 
         // 7. World tick
         this.world.update(delta);
 
-        // 8. Render
+        // 8. NPC tick
+        this.updateNPCs(delta);
+
+        // 9. Render
         this.renderer.render(this.scene, this.camera);
+    }
+
+    // ----------------------------------------------------------------
+    // NPC Management
+    // ----------------------------------------------------------------
+    updateNPCs(delta) {
+        // Spawn NPCs randomly
+        this.npcSpawnTimer += delta;
+        if (this.npcSpawnTimer > 5.0 && this.npcs.length < this.maxNpcs) {
+            this.npcSpawnTimer = 0;
+            const x = (Math.random() - 0.5) * 80;
+            const z = (Math.random() - 0.5) * 80;
+            const npc = new NPC(this.scene, this.physics.world, new THREE.Vector3(x, 100, z));
+            this.npcs.push(npc);
+        }
+
+        const now = this.clock.getElapsedTime();
+        // Update each NPC
+        for (let i = this.npcs.length - 1; i >= 0; i--) {
+            const npc = this.npcs[i];
+            npc.update(delta, this.player, now);
+
+            // Ground clamping for NPC
+            if (!npc.isDead && this.world.mapMeshes && this.world.mapMeshes.length > 0) {
+                const npcModel = npc.npcGroup;
+                const rayStartY = npcModel.position.y + 3;
+                this.groundRayOrigin.set(npcModel.position.x, rayStartY, npcModel.position.z);
+                this.groundRaycaster.set(this.groundRayOrigin, this.groundRayDir);
+
+                const intersects = this.groundRaycaster.intersectObjects(this.world.mapMeshes, false);
+                if (intersects.length > 0) {
+                    const groundY = intersects[0].point.y;
+                    if (npcModel.position.y <= groundY + 0.5) { // offset for cylinder
+                        npcModel.position.y = groundY;
+                    } else {
+                        // basic gravity manually for now
+                        npcModel.position.y -= 10 * delta;
+                    }
+                }
+            }
+
+            // Cleanup dead NPCs from array
+            if (npc.hp <= 0 && npc.isDead) { // Check if properly died
+                // we can keep them in array if we want dead bodies to stay a bit,
+                // but let's remove from array shortly after they die.
+                // The NPC class handles its own removal from scene.
+                setTimeout(() => {
+                    const idx = this.npcs.indexOf(npc);
+                    if (idx > -1) this.npcs.splice(idx, 1);
+                }, 3000);
+                npc.hp = -1; // Hack to ensure timeout only runs once
+            }
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Player Shooting
+    // ----------------------------------------------------------------
+    shootGun() {
+        if (!this.player.playerGroup || this.player.isDead) return;
+
+        // Reuse the pre-allocated raycaster
+        this.shootRaycaster.setFromCamera(_screenCenter, this.camera);
+
+        const targetMeshes = [];
+        for (let i = 0; i < this.npcs.length; i++) {
+            const npc = this.npcs[i];
+            if (!npc.isDead && npc.mesh) {
+                targetMeshes.push(npc.mesh);
+                npc.mesh.userData.npc = npc;
+            }
+        }
+
+        // Add map to check if we hit a wall first
+        const allTargets = targetMeshes.concat(this.world.mapMeshes);
+        const intersects = this.shootRaycaster.intersectObjects(allTargets, true);
+
+        if (intersects.length > 0) {
+            const hit = intersects[0];
+            let current = hit.object;
+            while (current) {
+                if (current.userData && current.userData.npc) {
+                    current.userData.npc.takeDamage(25);
+                    break;
+                }
+                current = current.parent;
+            }
+        }
     }
 
     // ----------------------------------------------------------------

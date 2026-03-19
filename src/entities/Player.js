@@ -44,6 +44,11 @@ export class Player {
         this.jumpForce = 25.0;
         this.isGrounded = false;
 
+        // ── Health System ──
+        this.maxHp = 200;
+        this.hp = this.maxHp;
+        this.isDead = false;
+
         // ── State ──
         this.isJumping = false;
         this.isSitting = false;
@@ -140,11 +145,48 @@ export class Player {
     }
 
     // ----------------------------------------------------------------
+    // Health and Damage
+    // ----------------------------------------------------------------
+
+    takeDamage(amount) {
+        if (this.isDead) return;
+
+        this.hp -= amount;
+        if (this.hp <= 0) {
+            this.hp = 0;
+            this.die();
+        }
+
+        // Update UI logic (if you have an HP bar)
+        this.updateHpUI();
+        console.log(`Player HP: ${this.hp}/${this.maxHp}`);
+    }
+
+    die() {
+        this.isDead = true;
+        console.log("Player died!");
+        // TODO: Play death animation or show game over screen
+    }
+
+    updateHpUI() {
+        const hpBar = document.getElementById('player-hp-bar');
+        const hpText = document.getElementById('player-hp-text');
+
+        if (hpBar) {
+            const pct = (this.hp / this.maxHp) * 100;
+            hpBar.style.width = pct + '%';
+        }
+        if (hpText) {
+            hpText.innerText = `HP: ${Math.ceil(this.hp)}`;
+        }
+    }
+
+    // ----------------------------------------------------------------
     // Per-frame Update
     // ----------------------------------------------------------------
 
     update(delta, cameraYaw) {
-        if (!this.animController.isReady) return;
+        if (!this.animController.isReady || this.isDead) return;
 
         // 1. Sync all inputs (joystick, toggles, cache movement vector)
         this.inputManager.update();
@@ -230,7 +272,15 @@ export class Player {
      *   moveDir    = (-sin(targetYaw), 0, -cos(targetYaw))
      */
     handleMovement(delta, cameraYaw) {
-        const mv = this.inputManager.getMovementVector();
+        let mv = this.inputManager.getMovementVector();
+
+        // R key held → force forward movement at sprint speed
+        const rHeld = this.inputManager.isRKeyDown();
+        if (rHeld && mv.magnitude < 0.01) {
+            // No WASD/joystick input, so auto-move forward
+            mv = { x: 0, y: 1, magnitude: 1 };
+        }
+
         if (mv.magnitude < 0.01) return;
 
         const group = this.playerGroup;
@@ -243,7 +293,7 @@ export class Player {
         const dz = -Math.cos(targetYaw);
         this.moveDirection.set(dx, 0, dz).normalize();
 
-        // Speed: crouch < normal < sprint
+        // Speed: crouch < normal < sprint (R key also activates sprint)
         let speed = this.moveSpeed;
         if (this.isSitting) speed = this.crouchSpeed;
         else if (this.inputManager.isSprinting) speed = this.sprintSpeed;
