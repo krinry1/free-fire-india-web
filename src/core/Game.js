@@ -5,6 +5,7 @@ import { Player } from '../entities/Player.js';
 import { InputManager } from './InputManager.js';
 import { CameraController } from './CameraController.js';
 import { NPC } from '../entities/NPC.js';
+import { SoundManager } from './SoundManager.js';
 
 // Reusable screen-center vector for raycasting (avoids per-frame allocation)
 const _screenCenter = new THREE.Vector2(0, 0);
@@ -51,6 +52,9 @@ export class Game {
             this.renderer.domElement,
             this.scene
         );
+
+        // 7. Sound Manager
+        this.soundManager = new SoundManager(this.camera);
 
         // Reusable raycaster for shooting
         this.shootRaycaster = new THREE.Raycaster();
@@ -106,6 +110,10 @@ export class Game {
     async init() {
         await this.world.init().catch(err => console.error("Map Load Err:", err));
         await this.player.init().catch(err => console.error("Player Load Err:", err));
+
+        // Load sounds from user-provided paths (public/models/)
+        this.soundManager.loadSound('fire', '/models/fire.mp3');
+        this.soundManager.loadSound('footsteps', '/models/footsteps.mp3', true, 0.3);
     }
 
     start() {
@@ -125,7 +133,7 @@ export class Game {
         const cameraYaw = this.cameraController.getYaw();
 
         // 3. Player movement (WASD + Jump/Gravity)
-        this.player.update(delta, cameraYaw);
+        this.player.update(delta, cameraYaw, this.soundManager);
 
         // 4. Ground-clamp the player onto the map terrain
         this.clampPlayerToGround();
@@ -212,6 +220,9 @@ export class Game {
     shootGun() {
         if (!this.player.playerGroup || this.player.isDead) return;
 
+        // Visual/Audio cue
+        this.soundManager.playSound('fire');
+
         // Reuse the pre-allocated raycaster
         this.shootRaycaster.setFromCamera(_screenCenter, this.camera);
 
@@ -274,8 +285,9 @@ export class Game {
         if (intersects.length > 0) {
             const groundY = intersects[0].point.y;
 
-            // Only clamp when the player is at or below the ground surface
-            if (playerModel.position.y <= groundY) {
+            // Only clamp when the player is NOT jumping up (velocityY <= 0)
+            // and is at or below the ground surface.
+            if (player.velocityY <= 0 && playerModel.position.y <= groundY + 0.01) {
                 playerModel.position.y = groundY;
                 player.velocityY = 0;
                 player.isGrounded = true;

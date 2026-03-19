@@ -32,16 +32,16 @@ export class Player {
         this.body = null;
 
         // ── Movement ──
-        this.moveSpeed = 30.0;
-        this.sprintSpeed = 50.0;
-        this.crouchSpeed = 10.0;
+        this.moveSpeed = 35.0;
+        this.sprintSpeed = 65.0;
+        this.crouchSpeed = 15.0;
         this.moveDirection = new THREE.Vector3();
         this.rotationSmoothing = 10.0;
 
         // ── Jump / Gravity ──
         this.velocityY = 0;
-        this.gravity = 40.0;
-        this.jumpForce = 25.0;
+        this.gravity = 60.0;
+        this.jumpForce = 35.0;
         this.isGrounded = false;
 
         // ── Health System ──
@@ -185,7 +185,7 @@ export class Player {
     // Per-frame Update
     // ----------------------------------------------------------------
 
-    update(delta, cameraYaw) {
+    update(delta, cameraYaw, soundManager) {
         if (!this.animController.isReady || this.isDead) return;
 
         // 1. Sync all inputs (joystick, toggles, cache movement vector)
@@ -205,7 +205,15 @@ export class Player {
         // 5. Animation state machine
         this.updateAnimationState();
 
-        // 6. Tick the animation mixer
+        // 6. Audio status
+        const isMoving = this.inputManager.isMoving();
+        if (isMoving && this.isGrounded && !this.isSitting) {
+            soundManager.playSound('footsteps');
+        } else {
+            soundManager.stopSound('footsteps');
+        }
+
+        // 7. Tick the animation mixer
         this.animController.update(delta);
     }
 
@@ -273,13 +281,6 @@ export class Player {
      */
     handleMovement(delta, cameraYaw) {
         let mv = this.inputManager.getMovementVector();
-
-        // R key held → force forward movement at sprint speed
-        const rHeld = this.inputManager.isRKeyDown();
-        if (rHeld && mv.magnitude < 0.01) {
-            // No WASD/joystick input, so auto-move forward
-            mv = { x: 0, y: 1, magnitude: 1 };
-        }
 
         if (mv.magnitude < 0.01) return;
 

@@ -134,10 +134,10 @@ export class AnimationController {
                     let nodeCount = 0;
                     this.model.traverse(() => nodeCount++);
 
-                    console.log('=== CHARACTER (Double Wrapper) ===');
-                    console.log('  Scale  :', this.playerScale);
-                    console.log('  Height :', size.y.toFixed(2), 'units');
-                    console.log('  Nodes  :', nodeCount, nodeCount > 30 ? '✓ Skeleton' : '✗ No skeleton');
+                    // console.log('=== CHARACTER (Double Wrapper) ===');
+                    // console.log('  Scale  :', this.playerScale);
+                    // console.log('  Height :', size.y.toFixed(2), 'units');
+                    // console.log('  Nodes  :', nodeCount, nodeCount > 30 ? '✓ Skeleton' : '✗ No skeleton');
 
                     // Debug axes on playerGroup (stays upright)
                     this.playerGroup.add(new THREE.AxesHelper(2));
@@ -162,16 +162,11 @@ export class AnimationController {
                             this._armatureRestQuat.copy(node.quaternion);
                         }
                     });
-                    if (this._armatureNode) {
-                        console.log('  ★ Armature found:', this._armatureNode.name);
-                        console.log('    Rest quaternion:',
-                            this._armatureRestQuat.x.toFixed(4),
-                            this._armatureRestQuat.y.toFixed(4),
-                            this._armatureRestQuat.z.toFixed(4),
-                            this._armatureRestQuat.w.toFixed(4));
-                    } else {
-                        console.warn('  ✗ Armature node NOT found — quaternion lock disabled');
-                    }
+                    // if (this._armatureNode) {
+                    //     console.log('  ★ Armature found:', this._armatureNode.name);
+                    // } else {
+                    //     console.warn('  ✗ Armature node NOT found — quaternion lock disabled');
+                    // }
 
                     // ═══ 7. Idle animation from this file ═══
                     if (gltf.animations && gltf.animations.length > 0) {
@@ -180,7 +175,6 @@ export class AnimationController {
                         this.actions['Idle'].loop = THREE.LoopRepeat;
                         this.actions['Idle'].play();
                         this.currentAction = this.actions['Idle'];
-                        console.log(`  Idle   : "${clip.name}" (${clip.tracks.length} tracks) ▶`);
                     }
 
                     // Build bone path map for retargeting extra animations
@@ -332,12 +326,28 @@ export class AnimationController {
             const bName = boneName.toLowerCase();
 
             // Jump: lock hips X/Z position (prevent forward flying)
-            if (clipName === 'Jump' && bName.includes('hips') && property === '.position') {
-                const startX = track.values[0];
-                const startZ = track.values[2];
-                for (let i = 0; i < track.values.length; i += 3) {
-                    track.values[i] = startX;
-                    track.values[i + 2] = startZ;
+            if (clipName === 'Jump' && bName.includes('hips')) {
+                if (property === '.position') {
+                    const startX = track.values[0];
+                    const startZ = track.values[2];
+                    for (let i = 0; i < track.values.length; i += 3) {
+                        track.values[i] = startX;
+                        track.values[i + 2] = startZ;
+                    }
+                }
+                // Jump Fix: Counter-rotate Hips if it's tilted 90-deg forward
+                if (property === '.quaternion') {
+                    // Apply a -90 deg X rotation offset to all keyframes if needed
+                    const offset = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+                    const q = new THREE.Quaternion();
+                    for (let i = 0; i < track.values.length; i += 4) {
+                        q.set(track.values[i], track.values[i + 1], track.values[i + 2], track.values[i + 3]);
+                        q.premultiply(offset);
+                        track.values[i] = q.x;
+                        track.values[i + 1] = q.y;
+                        track.values[i + 2] = q.z;
+                        track.values[i + 3] = q.w;
+                    }
                 }
             }
 

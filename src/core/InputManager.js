@@ -197,6 +197,11 @@ export class InputManager {
         if (this.isKeyDown('d')) kx += 1;
         if (this.isKeyDown('a')) kx -= 1;
 
+        // R key (sprint-forward) → force ky forward if no other input
+        if (this._rKeyDown && kx === 0 && ky === 0) {
+            ky = 1;
+        }
+
         // Analog joystick → continuous [-1, 1]
         const jx = window._joystickX || 0;
         const jy = window._joystickY || 0;
