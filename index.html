@@ -5,31 +5,143 @@
     <meta charset="UTF-8" />
     <meta name="viewport"
         content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <title>Multiplayer Shooter Game</title>
+    <title>Free Fire India Web</title>
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;700;900&display=swap');
+
+        :root {
+            --primary: #ffc832;
+            --primary-glow: rgba(255, 200, 50, 0.5);
+            --danger: #ff3c3c;
+            --glass: rgba(0, 0, 0, 0.6);
+            --glass-border: rgba(255, 255, 255, 0.1);
+        }
+
         body {
             margin: 0;
             overflow: hidden;
             background-color: #000;
-            font-family: 'Segoe UI', Arial, sans-serif;
+            font-family: 'Outfit', sans-serif;
             touch-action: none;
+            color: white;
+            user-select: none;
+            -webkit-user-select: none;
         }
 
         #game-container {
             width: 100vw;
             height: 100vh;
+            display: none; /* Hidden until game starts */
         }
 
-        #loading {
+        /* ── OVERLAYS ── */
+        .overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            background-size: cover;
+            background-position: center;
+            transition: opacity 0.5s ease;
+        }
+
+        #login-screen {
+            background-image: linear-gradient(rgba(0,0,0,0.4), rgba(0,0,0,0.4)), url('/ui/login_bg.png');
+        }
+
+        #lobby-screen {
+            background-image: linear-gradient(rgba(0,0,0,0.3), rgba(0,0,0,0.3)), url('/ui/lobby_bg.png');
+            display: none;
+        }
+
+        /* ── LOADING BAR ── */
+        #loading-container {
             position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            color: white;
-            font-family: Arial, sans-serif;
-            font-size: 24px;
+            bottom: 15%;
+            width: 80%;
+            max-width: 600px;
+            text-align: center;
+        }
+
+        #loading-status {
+            font-weight: 700;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            text-shadow: 0 0 10px rgba(0,0,0,0.8);
+            font-size: 14px;
+        }
+
+        .progress-bar-bg {
+            width: 100%;
+            height: 10px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 5px;
+            overflow: hidden;
+            border: 1px solid var(--glass-border);
+        }
+
+        #progress-bar-fill {
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, var(--primary), #fff);
+            box-shadow: 0 0 15px var(--primary-glow);
+            transition: width 0.3s ease;
+        }
+
+        /* ── PREMIUM BUTTONS ── */
+        .premium-btn {
+            padding: 18px 50px;
+            font-size: 22px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #000;
+            background: var(--primary);
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5), inset 0 2px 2px rgba(255,255,255,0.5);
+            transition: transform 0.1s, box-shadow 0.1s;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .premium-btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 6px 20px var(--primary-glow);
+        }
+
+        .premium-btn:active {
+            transform: scale(0.95);
+        }
+
+        #btn-start-game {
+            position: absolute;
+            bottom: 60px;
+            right: 60px;
+        }
+
+        /* ── GAME HUD ── */
+        #game-ui {
+            display: none;
             pointer-events: none;
-            z-index: 20;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        #game-ui > * {
+            pointer-events: auto;
         }
 
         /* ── CROSSHAIR ── */
@@ -45,11 +157,10 @@
         #crosshair::before {
             content: '';
             display: block;
-            width: 20px;
-            height: 20px;
-            border: 2px solid rgba(255, 255, 255, 0.85);
+            width: 28px;
+            height: 28px;
+            border: 2px solid rgba(255, 255, 255, 0.6);
             border-radius: 50%;
-            box-shadow: 0 0 4px rgba(0, 0, 0, 0.6);
         }
 
         #crosshair::after {
@@ -57,284 +168,276 @@
             position: absolute;
             top: 50%;
             left: 50%;
-            width: 4px;
-            height: 4px;
-            background: rgba(255, 255, 255, 0.95);
+            width: 5px;
+            height: 5px;
+            background: var(--primary);
             border-radius: 50%;
             transform: translate(-50%, -50%);
-            box-shadow: 0 0 3px rgba(0, 0, 0, 0.7);
         }
 
-        /* ── COMMON BUTTON STYLES ── */
+        /* ── COMBAT UI ── */
+        #combat-ui {
+            position: absolute;
+            top: 40px;
+            left: 40px;
+            z-index: 20;
+            color: white;
+            text-shadow: 1px 1px 4px rgba(0,0,0,0.8);
+        }
+
+        .hp-container {
+            width: 260px;
+            height: 14px;
+            background: rgba(0,0,0,0.5);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 3px;
+            margin-top: 8px;
+            overflow: hidden;
+        }
+
+        #player-hp-bar {
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, #2ecc71, #27ae60);
+            transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        /* ── CONTROLS UI ── */
         .action-btn {
-            width: 60px;
-            height: 60px;
+            width: 75px;
+            height: 75px;
             border-radius: 50%;
-            border: 2px solid rgba(255, 255, 255, 0.5);
-            background: rgba(0, 0, 0, 0.45);
-            backdrop-filter: blur(4px);
+            border: 1px solid var(--glass-border);
+            background: var(--glass);
+            backdrop-filter: blur(10px);
             color: #fff;
-            font-size: 11px;
+            font-size: 13px;
             font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
             cursor: pointer;
             display: flex;
+            flex-direction: column;
             align-items: center;
             justify-content: center;
-            user-select: none;
-            -webkit-user-select: none;
-            transition: background 0.15s, border-color 0.15s, transform 0.1s;
+            transition: transform 0.1s, background 0.2s, border-color 0.2s;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.4);
         }
 
-        .action-btn:hover {
-            background: rgba(255, 255, 255, 0.15);
-            border-color: rgba(255, 255, 255, 0.8);
+        .action-btn:active, .action-btn.active {
+            background: var(--primary-glow);
+            border-color: var(--primary);
+            transform: scale(0.9);
         }
 
-        .action-btn:active,
-        .action-btn.active {
-            background: rgba(255, 200, 50, 0.35);
-            border-color: #ffc832;
-            transform: scale(0.92);
-        }
-
-        .action-btn span.key-hint {
-            display: block;
-            font-size: 8px;
+        .key-hint {
+            font-size: 10px;
             opacity: 0.5;
-            margin-top: 2px;
+            margin-top: 3px;
         }
 
-        /* ── RIGHT SIDE ACTION BUTTONS ── */
-        #action-buttons {
-            position: absolute;
-            bottom: 30px;
-            right: 30px;
-            display: flex;
-            gap: 12px;
-            z-index: 15;
-        }
-
-        /* ── VIRTUAL JOYSTICK (bottom-left) ── */
         #joystick-zone {
             position: absolute;
-            bottom: 20px;
-            left: 20px;
-            width: 140px;
-            height: 140px;
+            bottom: 50px;
+            left: 50px;
+            width: 180px;
+            height: 180px;
             z-index: 15;
             touch-action: none;
         }
 
         #joystick-base {
-            width: 140px;
-            height: 140px;
+            width: 100%;
+            height: 100%;
             border-radius: 50%;
-            background: rgba(255, 255, 255, 0.08);
-            border: 2px solid rgba(255, 255, 255, 0.25);
+            background: rgba(255, 255, 255, 0.04);
+            border: 2px solid rgba(255, 255, 255, 0.12);
             position: relative;
+            backdrop-filter: blur(3px);
         }
 
         #joystick-thumb {
-            width: 50px;
-            height: 50px;
+            width: 65px;
+            height: 65px;
             border-radius: 50%;
-            background: rgba(255, 255, 255, 0.35);
-            border: 2px solid rgba(255, 255, 255, 0.6);
+            background: rgba(255, 255, 255, 0.18);
+            border: 1px solid rgba(255, 255, 255, 0.35);
             position: absolute;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
             pointer-events: none;
-            transition: background 0.1s;
+            transition: background 0.2s;
         }
 
         #joystick-thumb.active {
-            background: rgba(255, 200, 50, 0.5);
-            border-color: #ffc832;
+            background: var(--primary-glow);
+            border-color: var(--primary);
+            box-shadow: 0 0 25px var(--primary-glow);
         }
 
-        /* ── RUN BUTTON (above joystick) ── */
+        #action-buttons {
+            position: absolute;
+            bottom: 50px;
+            right: 50px;
+            display: flex;
+            gap: 20px;
+            z-index: 15;
+        }
+
         #btn-run {
             position: absolute;
-            bottom: 170px;
-            left: 55px;
-            z-index: 15;
-            width: 50px;
-            height: 50px;
-            font-size: 10px;
+            bottom: 250px;
+            left: 105px;
+            width: 60px;
+            height: 60px;
         }
     </style>
 </head>
 
 <body>
-    <div id="loading">Loading Map...</div>
-    <div id="crosshair"></div>
-
-    <!-- ── COMBAT UI ── -->
-    <div id="combat-ui"
-        style="position: absolute; top: 20px; left: 20px; z-index: 20; color: white; text-shadow: 1px 1px 2px black;">
-        <div style="font-size: 14px; font-weight: bold;">Player HP</div>
-        <div
-            style="width: 200px; height: 15px; background: rgba(255,0,0,0.5); border: 2px solid white; border-radius: 5px; margin-top: 4px;">
-            <div id="player-hp-bar" style="width: 100%; height: 100%; background: #0f0; transition: width 0.2s;"></div>
+    <!-- ── LOGIN SCREEN ── -->
+    <div id="login-screen" class="overlay">
+        <div id="loading-container">
+            <div id="loading-status">Downloading Game Data... 0%</div>
+            <div class="progress-bar-bg">
+                <div id="progress-bar-fill"></div>
+            </div>
         </div>
-        <div id="player-hp-text" style="font-size: 12px; margin-top: 4px;">HP: 200</div>
+        <button id="btn-login" class="premium-btn" style="display: none;">
+            GUEST LOGIN
+        </button>
     </div>
 
-    <!-- Fullscreen button (top-right) -->
-    <button id="btn-fullscreen" class="action-btn" type="button"
-        style="position: absolute; top: 15px; right: 15px; z-index: 20; width: 45px; height: 45px; font-size: 10px;">
-        FS
-    </button>
-
-    <!-- Virtual Joystick (bottom-left) -->
-    <div id="joystick-zone">
-        <div id="joystick-base">
-            <div id="joystick-thumb"></div>
-        </div>
+    <!-- ── LOBBY SCREEN ── -->
+    <div id="lobby-screen" class="overlay">
+        <h1 style="position: absolute; top: 60px; left: 60px; font-size: 54px; font-weight: 900; text-shadow: 0 0 30px rgba(0,0,0,0.6); letter-spacing: 2px;">VIBE LOBBY</h1>
+        <button id="btn-start-game" class="premium-btn">
+            START MATCH
+        </button>
     </div>
 
-    <!-- Run / Sprint button (above joystick) -->
-    <button id="btn-run" class="action-btn" type="button">
-        Run<span class="key-hint">[R]</span>
-    </button>
+    <!-- ── GAME HUD ── -->
+    <div id="game-ui">
+        <div id="crosshair"></div>
 
-    <!-- Right-side action buttons -->
-    <div id="action-buttons">
-        <button id="btn-attack" class="action-btn" type="button"
-            style="background: rgba(255, 50, 50, 0.45); border-color: rgba(255,0,0,0.5);">
-            Fire<span class="key-hint">[Click]</span>
+        <div id="combat-ui">
+            <div style="font-weight: 900; font-size: 18px; letter-spacing: 1px;">PLAYER HP</div>
+            <div class="hp-container">
+                <div id="player-hp-bar"></div>
+            </div>
+            <div id="player-hp-text" style="font-size: 14px; margin-top: 5px; font-weight: 700;">200 / 200</div>
+        </div>
+
+        <button id="btn-fullscreen" class="action-btn" style="position: absolute; top: 25px; right: 25px; width: 50px; height: 50px; font-size: 11px;">
+            FS
         </button>
-        <button id="btn-sit" class="action-btn" type="button">
-            Sit<span class="key-hint">[C]</span>
+
+        <div id="joystick-zone">
+            <div id="joystick-base">
+                <div id="joystick-thumb"></div>
+            </div>
+        </div>
+
+        <button id="btn-run" class="action-btn">
+            RUN <span class="key-hint">[R]</span>
         </button>
-        <button id="btn-jump" class="action-btn" type="button">
-            Jump<span class="key-hint">[Space]</span>
-        </button>
+
+        <div id="action-buttons">
+            <button id="btn-attack" class="action-btn" style="background: rgba(255, 60, 60, 0.4); border-color: var(--danger); width: 85px; height: 85px;">
+                FIRE <span class="key-hint">LMB</span>
+            </button>
+            <button id="btn-sit" class="action-btn">
+                SIT <span class="key-hint">[C]</span>
+            </button>
+            <button id="btn-jump" class="action-btn">
+                JUMP <span class="key-hint">SPACE</span>
+            </button>
+        </div>
     </div>
 
     <div id="game-container"></div>
+
     <script type="module" src="/src/main.js"></script>
+
     <script>
-        // ── FULLSCREEN BUTTON ──
-        document.getElementById('btn-fullscreen').addEventListener('pointerdown', function (e) {
-            e.preventDefault();
-            if (!document.fullscreenElement) {
-                document.documentElement.requestFullscreen().then(function () {
-                    if (screen.orientation && screen.orientation.lock) {
-                        screen.orientation.lock('landscape').catch(function () { });
-                    }
-                }).catch(function () { });
-            } else {
-                document.exitFullscreen().catch(function () { });
-            }
-        });
-
-        // ── VIRTUAL JOYSTICK ──
+        // ── JOYSTICK LOGIC ──
         (function () {
-            var zone = document.getElementById('joystick-zone');
-            var thumb = document.getElementById('joystick-thumb');
-            var baseRadius = 70; // half of 140px
-            var maxDist = 50;    // max thumb travel
-            var activePointerId = null;
-            var centerX = 0, centerY = 0;
+            const zone = document.getElementById('joystick-zone');
+            const thumb = document.getElementById('joystick-thumb');
+            const maxDist = 70;
+            let activePointerId = null;
+            let centerX = 0, centerY = 0;
 
-            zone.addEventListener('pointerdown', function (e) {
+            zone.addEventListener('pointerdown', (e) => {
                 if (activePointerId !== null) return;
                 e.preventDefault();
                 activePointerId = e.pointerId;
                 zone.setPointerCapture(e.pointerId);
-                var rect = zone.getBoundingClientRect();
-                centerX = rect.left + baseRadius;
-                centerY = rect.top + baseRadius;
+                const rect = zone.getBoundingClientRect();
+                centerX = rect.left + rect.width / 2;
+                centerY = rect.top + rect.height / 2;
                 thumb.classList.add('active');
                 handleMove(e.clientX, e.clientY);
+
+                // Fullscreen on first interaction
+                if (window.requestFullScreen) window.requestFullScreen();
             });
 
-            zone.addEventListener('pointermove', function (e) {
+            zone.addEventListener('pointermove', (e) => {
                 if (e.pointerId !== activePointerId) return;
                 e.preventDefault();
                 handleMove(e.clientX, e.clientY);
             });
 
-            zone.addEventListener('pointerup', function (e) {
-                if (e.pointerId !== activePointerId) return;
-                reset();
-            });
-            zone.addEventListener('pointercancel', function (e) {
-                if (e.pointerId !== activePointerId) return;
-                reset();
-            });
+            zone.addEventListener('pointerup', reset);
+            zone.addEventListener('pointercancel', reset);
 
             function handleMove(clientX, clientY) {
-                var dx = clientX - centerX;
-                var dy = clientY - centerY;
-                var dist = Math.sqrt(dx * dx + dy * dy);
+                let dx = clientX - centerX;
+                let dy = clientY - centerY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+
                 if (dist > maxDist) {
                     dx = (dx / dist) * maxDist;
                     dy = (dy / dist) * maxDist;
                 }
-                // Move thumb visually
-                thumb.style.transform = 'translate(calc(-50% + ' + dx + 'px), calc(-50% + ' + dy + 'px))';
 
-                // Map to WASD thresholds (deadzone = 15px)
-                var dead = 15;
-                // dy negative = forward (W), positive = backward (S)
-                // dx negative = left (A), positive = right (D)
+                thumb.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+
+                // Update WASD thresholds for legacy support
+                const dead = 15;
                 window._joystickW = dy < -dead;
                 window._joystickS = dy > dead;
                 window._joystickA = dx < -dead;
                 window._joystickD = dx > dead;
 
-                // Analog joystick axes: -1 to 1 (normalised by maxDist)
-                // X: right = +1, left = -1
-                // Y: forward = +1 (screen up = negative dy), backward = -1
-                var nx = dx / maxDist;
-                var ny = -dy / maxDist; // invert so "up on screen" = forward = +1
-                // Apply analog deadzone
-                var analogDead = dead / maxDist; // ~0.3
-                var aDist = Math.sqrt(nx * nx + ny * ny);
-                if (aDist < analogDead) { nx = 0; ny = 0; }
-                window._joystickX = nx;
-                window._joystickY = ny;
+                // Analog axes (-1 to 1)
+                window._joystickX = dx / maxDist;
+                window._joystickY = -dy / maxDist; // Forward is positive
             }
 
             function reset() {
                 activePointerId = null;
                 thumb.classList.remove('active');
                 thumb.style.transform = 'translate(-50%, -50%)';
-                window._joystickW = false;
-                window._joystickS = false;
-                window._joystickA = false;
-                window._joystickD = false;
-                window._joystickX = 0;
-                window._joystickY = 0;
+                window._joystickW = window._joystickS = window._joystickA = window._joystickD = false;
+                window._joystickX = window._joystickY = 0;
             }
 
-            // Initialize
-            window._joystickW = false;
-            window._joystickS = false;
-            window._joystickA = false;
-            window._joystickD = false;
-            window._joystickX = 0;
-            window._joystickY = 0;
+            window.requestFullScreen = function() {
+                if (!document.fullscreenElement) {
+                    document.documentElement.requestFullscreen().then(() => {
+                        if (screen.orientation && screen.orientation.lock) {
+                            screen.orientation.lock('landscape').catch(() => {});
+                        }
+                    }).catch(() => {});
+                }
+            };
         })();
 
-        // ── RUN / SPRINT BUTTON (toggle) ──
-        (function () {
-            var btn = document.getElementById('btn-run');
-            var sprinting = false;
-            btn.addEventListener('pointerdown', function (e) {
-                e.preventDefault();
-                sprinting = !sprinting;
-                btn.classList.toggle('active', sprinting);
-                btn.textContent = sprinting ? 'Walk' : 'Run';
-                window._isSprinting = sprinting;
-            });
-            window._isSprinting = false;
-        })();
+        document.getElementById('btn-fullscreen').addEventListener('click', () => {
+             if (window.requestFullScreen) window.requestFullScreen();
+        });
     </script>
 </body>
 

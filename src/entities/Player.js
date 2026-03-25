@@ -84,6 +84,9 @@ export class Player {
                 );
             }
         });
+
+        // Initialize HP UI
+        this.updateHpUI();
     }
 
     // ----------------------------------------------------------------
@@ -282,7 +285,10 @@ export class Player {
     handleMovement(delta, cameraYaw) {
         let mv = this.inputManager.getMovementVector();
 
-        if (mv.magnitude < 0.01) return;
+        if (mv.magnitude < 0.05) {
+            this.animController.setActionTimeScale('Run', 0);
+            return;
+        }
 
         const group = this.playerGroup;
 
@@ -294,7 +300,7 @@ export class Player {
         const dz = -Math.cos(targetYaw);
         this.moveDirection.set(dx, 0, dz).normalize();
 
-        // Speed: crouch < normal < sprint (R key also activates sprint)
+        // Speed: crouch < normal < sprint
         let speed = this.moveSpeed;
         if (this.isSitting) speed = this.crouchSpeed;
         else if (this.inputManager.isSprinting) speed = this.sprintSpeed;
@@ -302,7 +308,7 @@ export class Player {
         // Move the GROUP (proportional to joystick magnitude)
         group.position.addScaledVector(this.moveDirection, speed * mv.magnitude * delta);
 
-        // Smooth facing rotation on the GROUP
+        // Smooth facing rotation on the GROUP - Increased smoothing for "Free Fire" feel
         if (this.moveDirection.lengthSq() > 0.001) {
             const faceAngle = Math.atan2(this.moveDirection.x, this.moveDirection.z);
 
@@ -311,7 +317,8 @@ export class Player {
             while (diff > Math.PI) diff -= 2 * Math.PI;
             while (diff < -Math.PI) diff += 2 * Math.PI;
 
-            group.rotation.y += diff * Math.min(1, this.rotationSmoothing * delta);
+            // Faster snap rotation
+            group.rotation.y += diff * Math.min(1, 15.0 * delta);
         }
     }
 }
