@@ -87,6 +87,102 @@ export class Player {
 
         // Initialize HP UI
         this.updateHpUI();
+        
+        // Setup Shooting
+        this.raycaster = new THREE.Raycaster();
+        this._center = new THREE.Vector2(0, 0); // Screen center for Raycasting (NDC)
+    }
+
+    // ----------------------------------------------------------------
+    // Combat
+    // ----------------------------------------------------------------
+
+    /**
+     * Casts a ray from the center of the screen (provided by CameraController)
+     * and detects hits on the bot's hitbox.
+     * @param {Bot} bot - The enemy bot to check against
+     * @param {THREE.Camera} camera - The main camera
+     */
+    shoot(bot, camera, scene) {
+        if (this.isDead) return;
+
+        // 1. Raycast Calculation (Center of screen Accuracy)
+        this.raycaster.setFromCamera(this._center, camera);
+        const intersects = this.raycaster.intersectObject(bot.hitbox);
+
+        let hitPoint = null;
+
+        if (intersects.length > 0) {
+            // HIT!
+            hitPoint = intersects[0].point;
+            bot.takeDamage(25); // Baseline damage
+        } else {
+            // MISS: Extend ray to a distance for VFX
+            hitPoint = new THREE.Vector3();
+            this.raycaster.ray.at(100, hitPoint);
+        }
+
+        // 2. Visual Tracer (VFX Disconnect Rule)
+        // Draw from weapon position to hitPoint.
+        this._createBulletTracer(scene, hitPoint);
+        
+        // Play sound if SoundManager passed or via Game.js
+    }
+
+    _createBulletTracer(scene, targetPos) {
+        // Start from player's approximate weapon/hand position
+        // We can get this from the AnimationController's gun model world position
+        const startPos = new THREE.Vector3();
+        if (this.animController.gunModel) {
+            this.animController.gunModel.getWorldPosition(startPos);
+        } else {
+            // Fallback to neck height
+            startPos.copy(this.playerGroup.position).add(new THREE.Vector3(0, 9, 0));
+        }
+
+        const geometry = new THREE.BufferGeometry().setFromPoints([startPos, targetPos]);
+        const material = new THREE.LineBasicMaterial({ color: 0xffff00 }); // Yellow tracer
+        const line = new THREE.Line(geometry, material);
+        
+        scene.add(line);
+        setTimeout(() => scene.remove(line), 50); // Flash duration
+    }
+
+    takeDamage(amount) {
+        if (this.isDead) return;
+        this.hp -= amount;
+        if (this.hp <= 0) {
+            this.hp = 0;
+            this.die();
+        }
+        this.updateHpUI();
+    }
+
+    die() {
+        this.isDead = true;
+        // Animation flip or fall
+        this.animController.playerGroup.rotation.x = Math.PI / 2;
+    }
+
+    updateHpUI() {
+        const hpBar = document.getElementById('player-hp-bar');
+        const hpValue = document.getElementById('hp-value');
+        if (hpBar) {
+            const perc = (this.hp / this.maxHp) * 100;
+            hpBar.style.width = `${perc}%`;
+        }
+        if (hpValue) {
+            hpValue.innerText = `${Math.ceil(this.hp)} / ${this.maxHp}`;
+        }
+    }
+
+    reset(position) {
+        this.hp = this.maxHp;
+        this.isDead = false;
+        this.playerGroup.position.copy(position);
+        this.playerGroup.rotation.x = 0; // Stand back up
+        this.updateHpUI();
+        this.animController.fadeToAction('Idle');
     }
 
     // ----------------------------------------------------------------

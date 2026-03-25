@@ -4,8 +4,9 @@ import { Physics } from './Physics.js';
 import { Player } from '../entities/Player.js';
 import { InputManager } from './InputManager.js';
 import { CameraController } from './CameraController.js';
-import { NPC } from '../entities/NPC.js';
 import { SoundManager } from './SoundManager.js';
+import { GameManager } from './GameManager.js';
+import { Bot } from '../entities/Bot.js';
 
 // Reusable screen-center vector for raycasting (avoids per-frame allocation)
 const _screenCenter = new THREE.Vector2(0, 0);
@@ -60,13 +61,6 @@ export class Game {
         this.shootRaycaster = new THREE.Raycaster();
 
         // -------------------------------------------------------
-        // NPC Manager
-        // -------------------------------------------------------
-        this.npcs = [];
-        this.npcSpawnTimer = 0;
-        this.maxNpcs = 5;
-
-        // -------------------------------------------------------
         // GROUND RAYCASTER
         // Starts slightly above the player's head and casts DOWN.
         // This prevents teleporting to rooftops when entering buildings.
@@ -103,6 +97,15 @@ export class Game {
         this.wallCheckDist = 1.2;
         this.wallMinDist = 0.8;
 
+        // 13. Clash Squad System
+        const uiElements = {
+            scoreText: document.getElementById('match-score-bar'),
+            matchOverOverlay: document.getElementById('match-over-overlay'),
+            matchOverText: document.getElementById('match-over-text')
+        };
+        this.gameManager = new GameManager(this.scene, uiElements);
+        this.bot = new Bot(this.scene, this.physics.world);
+
         // Timing
         this.clock = new THREE.Clock();
     }
@@ -111,7 +114,15 @@ export class Game {
         await this.world.init().catch(err => console.error("Map Load Err:", err));
         await this.player.init().catch(err => console.error("Player Load Err:", err));
 
-        // Load sounds from user-provided paths (public/models/)
+        // After player is ready, init bot with player's model for SkeletonUtils
+        if (this.player.animController && this.player.animController.model) {
+            await this.bot.init(this.player);
+        }
+
+        // Start round 1
+        this.gameManager.startRound(this.player, this.bot);
+
+        // Load sounds
         this.soundManager.loadSound('fire', '/models/fire.mp3');
         this.soundManager.loadSound('footsteps', '/models/footsteps.mp3', true, 0.3);
     }
@@ -145,73 +156,34 @@ export class Game {
         if (this.player.playerGroup) {
             this.cameraController.update(this.player.playerGroup.position);
 
-            // Handle Player Attacking (Shooting)
-            if (this.inputManager.isAttackJustPressed()) {
+            // Handle Input for Shooting
+            const isFiring = this.inputManager.isAttackJustPressed();
+            if (isFiring && !this.player.isDead) {
                 this.shootGun();
             }
         }
 
-        // 7. World tick
+        // 7. Bot Update
+        this.bot.update(delta, this.player, this.clock.elapsedTime, this.gameManager);
+
+        // 8. Round Management Check
+        if (!this.gameManager.isMatchOver) {
+            if (this.player.isDead && !this._roundEnding) {
+                this._roundEnding = true;
+                this.gameManager.endRound('bot', this.player, this.bot);
+                setTimeout(() => this._roundEnding = false, 3500);
+            } else if (this.bot.isDead && !this._roundEnding) {
+                this._roundEnding = true;
+                this.gameManager.endRound('player', this.player, this.bot);
+                setTimeout(() => this._roundEnding = false, 3500);
+            }
+        }
+
+        // 9. World tick
         this.world.update(delta);
 
-        // 8. NPC tick
-        this.updateNPCs(delta);
-
-        // 9. Render
+        // 11. Render
         this.renderer.render(this.scene, this.camera);
-    }
-
-    // ----------------------------------------------------------------
-    // NPC Management
-    // ----------------------------------------------------------------
-    updateNPCs(delta) {
-        // Spawn NPCs randomly
-        this.npcSpawnTimer += delta;
-        if (this.npcSpawnTimer > 5.0 && this.npcs.length < this.maxNpcs) {
-            this.npcSpawnTimer = 0;
-            const x = (Math.random() - 0.5) * 80;
-            const z = (Math.random() - 0.5) * 80;
-            const npc = new NPC(this.scene, this.physics.world, new THREE.Vector3(x, 100, z));
-            this.npcs.push(npc);
-        }
-
-        const now = this.clock.getElapsedTime();
-        // Update each NPC
-        for (let i = this.npcs.length - 1; i >= 0; i--) {
-            const npc = this.npcs[i];
-            npc.update(delta, this.player, now);
-
-            // Ground clamping for NPC
-            if (!npc.isDead && this.world.mapMeshes && this.world.mapMeshes.length > 0) {
-                const npcModel = npc.npcGroup;
-                const rayStartY = npcModel.position.y + 3;
-                this.groundRayOrigin.set(npcModel.position.x, rayStartY, npcModel.position.z);
-                this.groundRaycaster.set(this.groundRayOrigin, this.groundRayDir);
-
-                const intersects = this.groundRaycaster.intersectObjects(this.world.mapMeshes, false);
-                if (intersects.length > 0) {
-                    const groundY = intersects[0].point.y;
-                    if (npcModel.position.y <= groundY + 0.5) { // offset for cylinder
-                        npcModel.position.y = groundY;
-                    } else {
-                        // basic gravity manually for now
-                        npcModel.position.y -= 10 * delta;
-                    }
-                }
-            }
-
-            // Cleanup dead NPCs from array
-            if (npc.hp <= 0 && npc.isDead) { // Check if properly died
-                // we can keep them in array if we want dead bodies to stay a bit,
-                // but let's remove from array shortly after they die.
-                // The NPC class handles its own removal from scene.
-                setTimeout(() => {
-                    const idx = this.npcs.indexOf(npc);
-                    if (idx > -1) this.npcs.splice(idx, 1);
-                }, 3000);
-                npc.hp = -1; // Hack to ensure timeout only runs once
-            }
-        }
     }
 
     // ----------------------------------------------------------------
@@ -227,12 +199,9 @@ export class Game {
         this.shootRaycaster.setFromCamera(_screenCenter, this.camera);
 
         const targetMeshes = [];
-        for (let i = 0; i < this.npcs.length; i++) {
-            const npc = this.npcs[i];
-            if (!npc.isDead && npc.mesh) {
-                targetMeshes.push(npc.mesh);
-                npc.mesh.userData.npc = npc;
-            }
+        if (this.bot && !this.bot.isDead && this.bot.hitbox) {
+            targetMeshes.push(this.bot.hitbox);
+            this.bot.hitbox.userData.npc = this.bot;
         }
 
         // Add map to check if we hit a wall first

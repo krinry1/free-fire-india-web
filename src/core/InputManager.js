@@ -83,7 +83,7 @@ export class InputManager {
             });
         }
 
-        const attackBtn = document.getElementById('btn-attack');
+        const attackBtn = document.getElementById('btn-fire');
         if (attackBtn) {
             attackBtn.addEventListener('pointerdown', (e) => {
                 e.preventDefault();
